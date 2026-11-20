@@ -1,0 +1,113 @@
+# =============================================================================
+# 웹툰 기업 실적 트래커 설정 파일
+# - 종목을 추가하려면 companies 아래에 블록을 하나 더 만들면 됩니다.
+# - API 키는 절대 이 파일에 쓰지 말고 GitHub Secrets(환경변수)로 주입합니다.
+#     NAVER_CLIENT_ID / NAVER_CLIENT_SECRET / DART_API_KEY
+# =============================================================================
+
+db_path: data/tracker.db
+backfill_start: "2022-01-01"     # 네이버 데이터랩 백필 시작일 (계절성 계수 산출용)
+request_sleep_sec: 1.5           # 외부 요청 간 대기 시간
+http_timeout_sec: 20
+
+# 네이버 데이터랩(검색어 트렌드) API
+#   hub    : NAVER API HUB(네이버 클라우드 콘솔)에서 발급한 키 — 2026-07-31 이후 신규 발급은 이것만 가능
+#   legacy : developers.naver.com 에서 기존에 받은 키 (2027-06-30까지 사용 가능)
+#   hub_url 경로는 3rd-party 문서 기준이라, 첫 실행에서 404가 나면 콘솔의 API 문서 경로로 고쳐 주세요.
+naver_api:
+  mode: hub
+  hub_url: "https://naverapihub.apigw.ntruss.com/search-trend/v1/search"
+  legacy_url: "https://openapi.naver.com/v1/datalab/search"
+
+nowcast:
+  direction_threshold: 0.03      # QoQ ±3% 이내면 NEUTRAL
+  min_obs_for_beta: 4            # 탄력성(beta) 추정에 필요한 최소 분기 수. 미달 시 beta=1 (가정치로 표시)
+
+companies:
+  # ---------------------------------------------------------------------------
+  enkeyax:
+    name: "엔키AX"
+    stock_code: "134580"
+    enabled: true
+    # 합병 등 구조적 단절. 국내 모델 백테스트는 이 분기 '다음' 분기부터 (QoQ 비교 때문)
+    #   탑툰 흡수합병 완료: 2025-04-01 → 2Q25가 첫 온전한 합병 분기
+    structural_breaks:
+      domestic_first_full_quarter: "2025Q2"
+      # 일본: 유통(외부 플랫폼) 중심 → 자체 플랫폼(탑툰재팬) 중심 전환. 더미 처리
+      overseas_regime_change: "2025Q1"
+    # 해외 매출 비중 기본값 (부문 데이터 확보 전 임시). 출처: 아시아경제 2025-10-28
+    #   독립리서치 아리스 "일본 비중 전체 매출의 30~40%" → 중간값 35%
+    default_overseas_share: 0.35
+
+    naver_datalab:               # 한국 검색량 → 국내 모델
+      groups:
+        - {name: "탑툰", keywords: ["탑툰", "toptoon"]}
+        - {name: "탑툰챗", keywords: ["탑툰챗", "탑툰 챗", "탑툰 AI"]}
+      # 동종사 비교용 (같은 요청 안에 넣어야 같은 스케일로 비교 가능, 최대 5그룹)
+      peer_groups:
+        - {name: "봄툰", keywords: ["봄툰"]}
+        - {name: "레진코믹스", keywords: ["레진코믹스", "레진"]}
+
+    google_trends:               # 보조 소스 (실패해도 파이프라인 계속)
+      keywords: ["toptoon", "トップトゥーン"]
+      geos: ["JP", "TW", "US"]
+
+    fx_pairs: ["JPYKRW", "TWDKRW", "USDKRW"]
+
+    # 도메인 → 국내/해외 매핑. Similarweb 수동입력·Tranco 순위에 사용
+    domains:
+      - {domain: "toptoon.com",       region: "domestic"}
+      - {domain: "chat.toptoon.com",  region: "split"}     # 국가별 비중으로 KR/해외 분리
+      - {domain: "toptoon.jp",        region: "overseas", fx: "JPYKRW"}
+      - {domain: "toptoon.com.tw",    region: "overseas", fx: "TWDKRW"}   # 실제 도메인 확인 필요
+      - {domain: "toptoonplus.com",   region: "overseas", fx: "USDKRW"}
+
+    # 공개 페이지 변경 감시 (이벤트 노이즈·신작 감지). 텍스트/링크만 저장
+    page_watch:
+      - {id: "kr_event",    url: "https://toptoon.com/event",          region: "domestic", kind: "event"}
+      - {id: "kr_notice",   url: "https://toptoon.com/notice",         region: "domestic", kind: "notice"}
+      - {id: "chat_home",   url: "https://chat.toptoon.com/",          region: "split",    kind: "catalog"}
+      - {id: "jp_home",     url: "https://toptoon.jp/",                region: "overseas", kind: "notice"}
+      - {id: "nijigame",    url: "https://www.nijigame.jp/",           region: "overseas", kind: "launch"}
+
+    # 탑툰챗 캐릭터 카탈로그 → IP 출처 태깅 (OPM 방향성 경고등)
+    #   selector는 실제 페이지 구조 확인 후 입력. 비어 있으면 CONFIG_REQUIRED로 기록
+    chat_catalog:
+      url: "https://chat.toptoon.com/"
+      item_selector: ""
+      name_selector: ""
+      origin_selector: ""
+      ip_rules:                  # 원작명/설명에 포함된 키워드 → IP 출처
+        novelpia: ["노벨피아", "novelpia"]
+        own: ["탑툰", "toptoon", "탑코"]
+
+    dart:
+      # 분기보고서 본문에서 찾을 부문/지역 매출 표 키워드
+      segment_keywords: ["플랫폼", "유통", "국내", "일본", "해외", "지역"]
+      cost_keywords: ["지급수수료", "외주비", "광고선전비"]
+
+  # ---------------------------------------------------------------------------
+  kidari:
+    name: "키다리스튜디오"
+    stock_code: "020120"
+    enabled: false               # TODO: 플랫폼/도메인 구성 확인 후 활성화
+    structural_breaks: {domestic_first_full_quarter: "2023Q1", overseas_regime_change: "2023Q1"}
+    default_overseas_share: 0.5
+    naver_datalab:
+      groups:
+        - {name: "봄툰", keywords: ["봄툰"]}
+        - {name: "레진코믹스", keywords: ["레진코믹스", "레진"]}
+    google_trends: {keywords: ["lezhin"], geos: ["US", "JP", "FR"]}
+    fx_pairs: ["USDKRW", "EURKRW", "JPYKRW"]
+    domains:
+      - {domain: "bomtoon.com", region: "domestic"}
+      - {domain: "lezhin.com",  region: "split"}
+    page_watch: []
+    chat_catalog: {url: "", item_selector: ""}
+    dart: {segment_keywords: ["국내", "해외", "지역"], cost_keywords: ["지급수수료"]}
+
+# 업황 체크용 동종사 (DART 분기 매출만 수집)
+peers:
+  - {name: "미스터블루",   stock_code: "207760"}
+  - {name: "디앤씨미디어", stock_code: "263720"}
+  - {name: "키다리스튜디오", stock_code: "020120"}

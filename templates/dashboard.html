@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>웹툰 기업 실적 트래커</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+.viz-root{
+  color-scheme:light;
+  --page:#f9f9f7; --surface-1:#fcfcfb; --text-primary:#0b0b0b; --text-secondary:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+  --series-1:#2a78d6; --series-2:#eb6834; --series-3:#1baf7a; --series-4:#eda100; --series-5:#e87ba4;
+  --series-6:#008300; --series-7:#6250d6; --series-8:#e34948;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b; --up:#006300;
+}
+@media (prefers-color-scheme:dark){
+  :root:where(:not([data-theme="light"])) .viz-root{
+    color-scheme:dark;
+    --page:#0d0d0d; --surface-1:#1a1a19; --text-primary:#f0efec; --text-secondary:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+    --series-1:#3987e5; --series-2:#d95926; --series-3:#199e70; --series-4:#c98500; --series-5:#d55181;
+    --series-6:#0ca30c; --series-7:#9085e9; --series-8:#e66767; --up:#0ca30c;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif}
+.viz-root{background:var(--page);color:var(--text-primary);min-height:100vh;padding:20px 24px 60px}
+header{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+h1{font-size:20px;margin:0} h2{font-size:15px;margin:0 0 10px} h3{font-size:13px;margin:0 0 6px;color:var(--text-secondary);font-weight:600}
+.meta{color:var(--muted);font-size:12px}
+.tabs{display:flex;gap:6px;margin:6px 0 16px}
+.tabs button{border:1px solid var(--border);background:var(--surface-1);color:var(--text-primary);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:13px}
+.tabs button.on{border-color:var(--series-1);box-shadow:inset 0 0 0 1px var(--series-1)}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:16px}
+.c12{grid-column:span 12}.c8{grid-column:span 8}.c6{grid-column:span 6}.c4{grid-column:span 4}.c3{grid-column:span 3}
+@media(max-width:1000px){.c8,.c6,.c4,.c3{grid-column:span 12}}
+.tile .v{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:4px}
+.tile .s{font-size:12px;color:var(--text-secondary);margin-top:4px}
+.up{color:var(--up)} .down{color:var(--critical)}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);white-space:nowrap}
+.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.b-OK::before{background:var(--good)} .b-FAILED::before{background:var(--critical)}
+.b-MANUAL_REQUIRED::before{background:var(--warning)} .b-CONFIG_REQUIRED::before{background:var(--serious)}
+.b-POSITIVE::before{background:var(--good)} .b-NEGATIVE::before{background:var(--critical)} .b-NEUTRAL::before{background:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);vertical-align:top}
+th{color:var(--text-secondary);font-weight:600} td.n,th.n{text-align:right}
+.summary li{margin:4px 0;font-size:13.5px;line-height:1.5}
+.note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.5}
+.chartbox{position:relative;height:260px}
+.empty{color:var(--muted);font-size:13px;padding:30px 0;text-align:center}
+form.inp{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;align-items:end}
+form.inp label{font-size:12px;color:var(--text-secondary);display:flex;flex-direction:column;gap:4px}
+form.inp input,form.inp select{padding:6px 8px;border:1px solid var(--axis);border-radius:6px;background:var(--surface-1);color:var(--text-primary)}
+form.inp button{padding:8px 10px;border-radius:6px;border:0;background:var(--series-1);color:#fff;cursor:pointer}
+@media(max-width:1000px){form.inp{grid-template-columns:1fr 1fr}}
+.tag{font-size:10.5px;border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-right:3px;color:var(--text-secondary)}
+details summary{cursor:pointer;font-size:12px;color:var(--text-secondary)}
+</style>
+</head>
+<body>
+<div class="viz-root">
+  <header>
+    <h1>웹툰 기업 실적 트래커</h1>
+    <span class="meta" id="meta"></span>
+  </header>
+  <div class="tabs" id="tabs"></div>
+  <div id="app"></div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const css = n => getComputedStyle(document.querySelector('.viz-root')).getPropertyValue(n).trim();
+const SLOT = i => css(`--series-${(i % 8) + 1}`);
+const pct = (x, d=1) => x == null ? 'N/A' : `${x > 0 ? '+' : ''}${(x * 100).toFixed(d)}%`;
+const eok = x => x == null ? '–' : `${(x / 1e8).toLocaleString('ko-KR', {maximumFractionDigits: 0})}억`;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let charts = [];
+
+function lineChart(el, seriesMap, {yTitle='', reverse=false, dashedKeys=[], fmt=null}={}) {
+  const keys = Object.keys(seriesMap);
+  if (!keys.length) { el.innerHTML = '<div class="empty">아직 데이터 없음</div>'; return; }
+  const labels = [...new Set(keys.flatMap(k => seriesMap[k].map(p => p[0])))].sort();
+  const datasets = keys.map((k, i) => {
+    const m = new Map(seriesMap[k]);
+    return {label: k, data: labels.map(l => m.has(l) ? m.get(l) : null), borderColor: SLOT(i),
+            backgroundColor: SLOT(i), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4,
+            spanGaps: true, tension: 0.15, borderDash: dashedKeys.includes(k) ? [5, 4] : []};
+  });
+  const cv = document.createElement('canvas'); el.innerHTML = ''; el.appendChild(cv);
+  charts.push(new Chart(cv, {type: 'line', data: {labels, datasets}, options: baseOpts({yTitle, reverse, fmt})}));
+}
+
+function baseOpts({yTitle='', reverse=false, fmt=null, stacked=false}={}) {
+  return {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: {mode: 'index', intersect: false},
+    plugins: {
+      legend: {position: 'top', align: 'start', labels: {boxWidth: 10, boxHeight: 10, color: css('--text-secondary'), font: {size: 11}}},
+      tooltip: {callbacks: fmt ? {label: c => `${c.dataset.label}: ${fmt(c.parsed.y)}`} : {}},
+    },
+    scales: {
+      x: {stacked, ticks: {color: css('--muted'), maxTicksLimit: 10, font: {size: 10}}, grid: {display: false}, border: {color: css('--axis')}},
+      y: {stacked, reverse, title: {display: !!yTitle, text: yTitle, color: css('--muted'), font: {size: 10}},
+          ticks: {color: css('--muted'), font: {size: 10}, callback: fmt || undefined},
+          grid: {color: css('--grid')}, border: {display: false}},
+    },
+  };
+}
+
+function barChart(el, labels, datasets, opts={}) {
+  if (!labels.length) { el.innerHTML = '<div class="empty">아직 데이터 없음</div>'; return; }
+  const cv = document.createElement('canvas'); el.innerHTML = ''; el.appendChild(cv);
+  datasets.forEach((d, i) => Object.assign(d, {borderRadius: 4, borderSkipped: 'start', borderWidth: 0,
+    backgroundColor: d.backgroundColor || SLOT(i), maxBarThickness: 28}));
+  charts.push(new Chart(cv, {type: 'bar', data: {labels, datasets}, options: baseOpts(opts)}));
+}
+
+function tile(title, value, sub, cls='') {
+  return `<div class="card tile c3"><h3>${title}</h3><div class="v ${cls}">${value}</div><div class="s">${sub}</div></div>`;
+}
+
+function render(co) {
+  charts.forEach(c => c.destroy()); charts = [];
+  const nc = co.nowcast;
+  const app = document.getElementById('app');
+  const sign = x => x == null ? '' : x > 0 ? 'up' : x < 0 ? 'down' : '';
+
+  // ---------- 요약 / 코멘터리
+  const cm = co.commentary;
+  const llm = cm && !cm._stale ? `
+      <h3>주간 애널리스트 코멘터리 (${esc(cm.as_of_date)} · LLM)</h3>
+      <span class="badge b-${esc(cm.dashboard_commentary?.qoq_revenue_signal)}">${esc(cm.dashboard_commentary?.qoq_revenue_signal)}</span>
+      <ul class="summary">${(cm.dashboard_commentary?.key_takeaways || []).map(t => `<li>${esc(t)}</li>`).join('')}</ul>
+      <div class="note"><b>노이즈 점검</b> ${esc(cm.metrics_collected?.event_noise_check?.promo_summary || '–')}<br>
+      <b>IP 믹스</b> ${esc(cm.metrics_collected?.ip_mix_note || '–')}<br>
+      <b>주의</b> ${esc(cm.dashboard_commentary?.analyst_caution || '–')}</div>` :
+      `<h3>자동 요약 (규칙 기반${cm ? ' · LLM 코멘터리가 10일 이상 지나 숨김' : ''})</h3>`;
+  const kw = Object.entries(nc.wow || {});
+
+  app.innerHTML = `
+  <div class="grid">
+    <div class="card c8">${llm}<ul class="summary">${co.auto_summary.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>
+    <div class="card c4"><h2>데이터 상태</h2><table><tr><th>소스</th><th>상태</th><th>최근 실행</th></tr>
+      ${co.status.map(s => `<tr title="${esc(s.message)}"><td>${esc(s.source)}</td><td><span class="badge b-${s.status}">${s.status}</span></td><td class="meta">${esc((s.run_at||'').slice(0,10))}</td></tr>`).join('')}
+      </table><div class="note">행에 마우스를 올리면 실패 사유가 보입니다.</div></div>
+
+    ${tile(`${nc.target_quarter} 합산 신호 (QTD ${nc.weeks_elapsed}주)`, pct(nc.g_total), `<span class="badge b-${nc.direction}">${nc.direction}</span> 해외비중 ${(nc.overseas_share*100).toFixed(0)}% · ${esc(nc.overseas_share_source)}`, sign(nc.g_total))}
+    ${tile('국내 신호 QoQ', pct(nc.g_domestic), `계절조정 ${pct(nc.g_domestic_sa)} · 네이버+국내 트래픽`, sign(nc.g_domestic))}
+    ${tile('해외 신호 QoQ (환율 반영)', pct(nc.g_overseas), Object.entries(nc.fx_effect||{}).map(([k,v]) => `${esc(k)} 환율 ${pct(v)}`).join(' · ') || '해외 데이터 없음', sign(nc.g_overseas))}
+    ${tile(`${nc.target_quarter} 매출 나우캐스트`, eok(nc.revenue_nowcast), `기준 ${nc.base_quarter} ${eok(nc.revenue_base)} · β ${nc.beta.toFixed(2)} (${esc(nc.beta_note)})`)}
+
+    <div class="card c12"><h2>주간 검색량 추이 (네이버 데이터랩, 한국)</h2>
+      <div class="meta" style="margin-bottom:6px">${kw.map(([k,v]) => `${esc(k)}: 최근주 ${v.last.toFixed(1)} · WoW <span class="${sign(v.wow)}">${pct(v.wow)}</span> · 4주 <span class="${sign(v.m4)}">${pct(v.m4)}</span>`).join(' &nbsp;|&nbsp; ')}</div>
+      <div class="chartbox" id="ch-naver"></div>
+      <div class="note">점선 = 동종사. 지수는 요청 구간 내 최댓값=100 기준이라 매주 전체 구간을 다시 받아 덮어씁니다.</div></div>
+
+    <div class="card c6"><h2>해외 검색 지수 (Google Trends, 보조)</h2><div class="chartbox" id="ch-gt"></div></div>
+    <div class="card c6"><h2>월간 방문 수 (Similarweb, 수동 입력)</h2><div class="chartbox" id="ch-sw"></div></div>
+    <div class="card c6"><h2>환율 지수 (3년 전=100)</h2><div class="chartbox" id="ch-fx"></div>
+      <div class="note">원화 환산 효과. 지수가 오르면 해당 통화 매출의 원화 환산액이 늘어납니다.</div></div>
+    <div class="card c6"><h2>Tranco 도메인 순위 (낮을수록 상위)</h2><div class="chartbox" id="ch-tr"></div></div>
+
+    <div class="card c8"><h2>분기 실적 (DART, 분기 단독) + 나우캐스트</h2><div class="chartbox" id="ch-fin"></div>
+      <div class="note">4분기 = 사업보고서 연간 − 3분기 누적. 마지막 막대(연한 색)는 추정치입니다.</div></div>
+    <div class="card c4"><h2>영업이익률</h2><div class="chartbox" id="ch-opm"></div></div>
+
+    <div class="card c6"><h2>백테스트 (분기 종료 시점 신호 vs 실제 매출 QoQ)</h2>
+      <table><tr><th>분기</th><th>모델</th><th class="n">신호</th><th class="n">실제</th><th>방향</th></tr>
+      ${(nc.backtest||[]).slice().reverse().map(r => `<tr><td>${r.quarter}</td><td class="meta">${r.model === 'total' ? '합산' : '해외 대리('+r.regime+')'}</td>
+        <td class="n">${pct(r.g_signal)}</td><td class="n">${pct(r.actual_qoq)}</td>
+        <td>${r.g_signal == null ? '–' : Math.sign(r.g_signal) === Math.sign(r.actual_qoq) ? '적중' : '불일치'}</td></tr>`).join('') || '<tr><td colspan=5 class="empty">실적·신호 데이터 축적 전</td></tr>'}
+      </table>
+      <div class="note">합산 모델(${nc.dom_backtest_start}~): 적중 ${fmtHit(nc.backtest_stats.total_post_merger)} ·
+        해외 대리(유통 중심기): ${fmtHit(nc.backtest_stats.overseas_proxy_pre_regime)} · 해외 대리(플랫폼 전환 후): ${fmtHit(nc.backtest_stats.overseas_proxy_post_regime)}<br>
+        LOO 평균오차(QoQ) ${pct(nc.backtest_stats.loo_mae_qoq)} · 표본이 작아 적중률은 검증이 아니라 모니터링 지표입니다.</div></div>
+
+    <div class="card c6"><h2>탑툰챗 IP 출처 비중 (OPM 방향성 경고등)</h2><div class="chartbox" id="ch-ip"></div>
+      <div class="note">카탈로그 기준 비중이며 매출 비중이 아닙니다. 외부 IP(노벨피아 등) 비중이 오르면 지급수수료 계정 변동을 함께 확인하세요.
+      ${nc.event_elasticity ? `<br>프로모션 주간 검색 탄력성: ${pct(nc.event_elasticity.avg_uplift)} (n=${nc.event_elasticity.n})` : ''}</div></div>
+
+    <div class="card c6"><h2>감지된 이벤트 (공개 페이지 변경)</h2>
+      <table><tr><th>감지일</th><th>내용</th><th>태그</th></tr>
+      ${co.events.slice(0, 15).map(e => `<tr><td class="meta">${e.detected_on}</td><td><a href="${esc(e.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(e.title)}</a><div class="meta">${esc(e.page_id)}</div></td><td>${e.tags.map(t => `<span class="tag">${t}</span>`).join('')}</td></tr>`).join('') || '<tr><td colspan=3 class="empty">첫 실행은 기준선만 저장합니다</td></tr>'}
+      </table></div>
+
+    <div class="card c6"><h2>부문·지역·비용 (DART 확인값)</h2>
+      <table><tr><th>분기</th><th>구분</th><th>항목</th><th class="n">금액</th><th>근거</th></tr>
+      ${co.segments.slice(-20).map(s => `<tr><td>${s.quarter}</td><td>${s.scope}</td><td>${esc(s.account)}</td><td class="n">${eok(s.value)}</td><td class="meta">${esc(s.basis)}</td></tr>`).join('') || '<tr><td colspan=5 class="empty">data/review/ 의 후보 표 확인 후 segments.csv에 입력</td></tr>'}
+      </table></div>
+
+    <div class="card c12"><h2>Similarweb 월간 입력</h2>
+      <form class="inp" id="swform" onsubmit="return submitSW(event)">
+        <label>월 <input name="month" type="month" required></label>
+        <label>도메인 <select name="domain">${co.domains.map(d => `<option>${esc(d)}</option>`).join('')}</select></label>
+        <label>월 방문 수 <input name="visits" type="number" min="0" required></label>
+        <label>평균 체류(초) <input name="avg_duration_sec" type="number" min="0"></label>
+        <label>한국 비중(0~1) <input name="kr_share" type="number" step="0.001" min="0" max="1"></label>
+        <button type="submit">GitHub Issue로 제출</button>
+      </form>
+      <div class="note">제출하면 GitHub Issue가 열리고, Actions가 내용을 data/manual/similarweb.csv에 반영한 뒤 Issue를 자동으로 닫습니다.
+        같은 월·도메인을 다시 넣으면 덮어씁니다. 수치를 못 봤으면 빈칸으로 두고 넘어가세요(추정치 입력 금지).
+        <span id="csvrow"></span></div></div>
+
+    <div class="card c12"><details><summary>표로 보기: 분기 실적 원자료</summary>
+      <table><tr><th>분기</th><th class="n">매출</th><th class="n">영업이익</th><th class="n">순이익</th><th class="n">OPM</th><th>근거</th></tr>
+      ${co.financials.map(f => `<tr><td>${f.quarter}</td><td class="n">${eok(f.revenue)}</td><td class="n">${eok(f.operating_income)}</td><td class="n">${eok(f.net_income)}</td><td class="n">${f.revenue ? pct(f.operating_income / f.revenue) : '–'}</td><td class="meta">${esc(f.basis)}</td></tr>`).join('')}
+      </table></details></div>
+  </div>`;
+
+  // ---------- 차트
+  const peerKeys = Object.keys(co.naver).filter(k => !co.own_groups.includes(k));
+  lineChart(document.getElementById('ch-naver'), co.naver, {yTitle: '지수', dashedKeys: peerKeys});
+  lineChart(document.getElementById('ch-gt'), co.gtrends, {yTitle: '지수'});
+  lineChart(document.getElementById('ch-sw'), Object.fromEntries(Object.entries(co.similarweb).map(([k, v]) => [k, v.points])),
+            {fmt: v => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v});
+  lineChart(document.getElementById('ch-fx'), co.fx, {fmt: v => Number(v).toFixed(0)});
+  lineChart(document.getElementById('ch-tr'), co.tranco, {reverse: true, fmt: v => Number(v).toLocaleString()});
+
+  const fin = co.financials.slice(-12);
+  const labels = fin.map(f => f.quarter);
+  const revData = fin.map(f => f.revenue != null ? f.revenue / 1e8 : null);
+  const colors = fin.map(() => SLOT(0));
+  if (nc.revenue_nowcast && !labels.includes(nc.target_quarter)) {
+    labels.push(nc.target_quarter + ' (E)'); revData.push(nc.revenue_nowcast / 1e8); colors.push(SLOT(0) + '66');
+  }
+  barChart(document.getElementById('ch-fin'), labels,
+           [{label: '매출(억원)', data: revData, backgroundColor: colors}], {fmt: v => Number(v).toFixed(0)});
+  const opm = Object.entries(nc.opm || {}).slice(-12);
+  lineChart(document.getElementById('ch-opm'), {'OPM': opm}, {fmt: v => (v*100).toFixed(0)+'%'});
+
+  const ip = co.ip_mix, ipKeys = Object.keys(ip);
+  if (ipKeys.length) {
+    const lab = [...new Set(ipKeys.flatMap(k => ip[k].map(p => p[0])))].sort();
+    barChart(document.getElementById('ch-ip'), lab, ipKeys.map(k => {const m = new Map(ip[k]); return {label: k, data: lab.map(l => m.get(l) ?? 0)};}),
+             {stacked: true, fmt: v => (v*100).toFixed(0)+'%'});
+  } else document.getElementById('ch-ip').innerHTML = '<div class="empty">config.yaml의 chat_catalog selector 설정 후 수집됩니다</div>';
+}
+
+function fmtHit(s) { return s && s.n ? `${(s.hit_ratio*100).toFixed(0)}% (n=${s.n})` : 'n=0'; }
+
+function submitSW(ev) {
+  ev.preventDefault();
+  const f = Object.fromEntries(new FormData(ev.target).entries());
+  const co = DATA.companies[current];
+  const row = [co.id, f.month, f.domain, f.visits, f.avg_duration_sec || '', f.kr_share || ''].join(',');
+  document.getElementById('csvrow').innerHTML = `<br>CSV 행(직접 커밋할 때): <code>${esc(row)}</code>`;
+  if (!DATA.repo) { alert('저장소 정보가 없어 Issue를 열 수 없습니다. 아래 CSV 행을 data/manual/similarweb.csv에 추가하세요.'); return false; }
+  const q = new URLSearchParams({template: 'similarweb.yml', title: `[similarweb] ${co.id} ${f.month} ${f.domain}`,
+    company: co.id, month: f.month, domain: f.domain, visits: f.visits, avg_duration_sec: f.avg_duration_sec || '', kr_share: f.kr_share || ''});
+  window.open(`https://github.com/${DATA.repo}/issues/new?${q}`, '_blank');
+  return false;
+}
+
+let current = 0;
+function init() {
+  if (!DATA || !DATA.companies.length) { document.getElementById('app').innerHTML = '<div class="empty">데이터 없음</div>'; return; }
+  document.getElementById('meta').textContent = `기준일 ${DATA.as_of} · 생성 ${DATA.generated_at}`;
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = DATA.companies.map((c, i) => `<button data-i="${i}" class="${i===0?'on':''}">${esc(c.name)} (${c.stock_code})</button>`).join('');
+  tabs.onclick = e => { const b = e.target.closest('button'); if (!b) return; current = +b.dataset.i;
+    [...tabs.children].forEach(x => x.classList.toggle('on', x === b)); render(DATA.companies[current]); };
+  render(DATA.companies[0]);
+}
+init();
+</script>
+</body>
+</html>

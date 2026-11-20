@@ -1,0 +1,8 @@
+requests>=2.31
+pandas>=2.1
+numpy>=1.26
+PyYAML>=6.0
+beautifulsoup4>=4.12
+lxml>=5.0
+yfinance>=0.2.40
+pytrends==4.9.2   # 2025-04 아카이브. 실패해도 파이프라인은 계속됨

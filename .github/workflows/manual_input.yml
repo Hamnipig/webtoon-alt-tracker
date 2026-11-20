@@ -1,0 +1,50 @@
+# Similarweb 입력 Issue → CSV 반영 → 대시보드 재빌드 → Issue 자동 종료
+name: manual-input
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency: {group: tracker-data, cancel-in-progress: false}
+
+jobs:
+  ingest:
+    # 저장소 소유자/협업자가 연 [similarweb] 이슈만 처리 (외부인 입력 차단)
+    if: >-
+      startsWith(github.event.issue.title, '[similarweb]') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Parse issue
+        id: parse
+        env: {ISSUE_BODY: "${{ github.event.issue.body }}"}
+        run: |
+          set +e
+          out=$(python ingest_issue.py); code=$?
+          echo "$out"
+          echo "msg<<EOF" >> $GITHUB_OUTPUT; echo "$out" >> $GITHUB_OUTPUT; echo "EOF" >> $GITHUB_OUTPUT
+          exit $code
+      - run: python collector.py --only manual && python build_dashboard.py
+        env: {GITHUB_REPOSITORY: "${{ github.repository }}"}
+      - name: Commit & close
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          git config user.name "tracker-bot"
+          git config user.email "tracker-bot@users.noreply.github.com"
+          git add data docs
+          git diff --cached --quiet || git commit -m "manual: similarweb input #${{ github.event.issue.number }} [skip ci]"
+          git push
+          gh issue close ${{ github.event.issue.number }} --comment "반영 완료: ${{ steps.parse.outputs.msg }}"
+      - name: Report error
+        if: failure()
+        env: {GH_TOKEN: "${{ github.token }}"}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --body "입력 오류로 반영하지 못했습니다. 이슈 본문을 수정(edit)하면 다시 처리합니다. 로그: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

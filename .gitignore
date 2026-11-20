@@ -1,0 +1,7 @@
+data/tracker.db-journal
+__pycache__/
+*.pyc
+.env
+tests/out/
+tests/*.db
+tests/mock_config.yaml

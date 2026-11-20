@@ -1,0 +1,33 @@
+name: Similarweb 월간 입력
+description: Similarweb 무료판에서 확인한 도메인별 월간 지표 입력 (Actions가 자동 반영 후 이슈를 닫습니다)
+title: "[similarweb] "
+labels: ["similarweb"]
+body:
+  - type: input
+    id: company
+    attributes: {label: "종목 ID", placeholder: "enkeyax"}
+    validations: {required: true}
+  - type: input
+    id: month
+    attributes: {label: "월 (YYYY-MM)", placeholder: "2026-10"}
+    validations: {required: true}
+  - type: input
+    id: domain
+    attributes: {label: "도메인", placeholder: "toptoon.com"}
+    validations: {required: true}
+  - type: input
+    id: visits
+    attributes: {label: "월 방문 수", description: "Total Visits (예: 1.2M → 1200000)"}
+    validations: {required: true}
+  - type: input
+    id: avg_duration_sec
+    attributes: {label: "평균 체류 시간(초)", description: "예: 00:05:30 → 330"}
+  - type: input
+    id: kr_share
+    attributes: {label: "한국 트래픽 비중 (0~1)", description: "chat.toptoon.com처럼 국내/해외가 섞인 도메인은 꼭 입력"}
+  - type: input
+    id: top_country
+    attributes: {label: "1위 유입 국가"}
+  - type: textarea
+    id: note
+    attributes: {label: "메모"}
