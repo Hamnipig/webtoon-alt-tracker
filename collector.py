@@ -385,6 +385,35 @@ def parse_region_table(rows):
     return None
 
 
+def parse_segment_region(rows):
+    """'사업부문 | 매출유형 | 국내/해외 | 당기(누적) | 전기' 형태 (키다리·엔키AX 사업의 내용 표).
+    국내(내수)·해외(국외·수출) 라벨 바로 뒤 첫 숫자 = 당기 누적. 부문별로 합산한다."""
+    if len(rows) < 3 or not any(r_ and r_[0].replace(" ", "").startswith("합계") for r_ in rows):
+        return None
+    head = " ".join(rows[0][:5]).replace(" ", "")
+    if not re.search(r"당(분기|반기|기)|제\d+기", head):
+        return None
+    dom, ovs, hits = 0.0, 0.0, 0
+    for r_ in rows[1:]:
+        if r_ and re.match(r"^(합계|총계|계)$", r_[0].replace(" ", "")):
+            continue                                # 합계 행의 국내/해외는 부문 합과 중복
+        cells = [c.replace(" ", "").lstrip("-") for c in r_]
+        for i, c in enumerate(cells):
+            if c in ("국내", "내수") or c in ("해외", "국외", "수출"):
+                nums = [_num(x) for x in r_[i + 1:]]
+                v = next((x for x in nums if x is not None), None)
+                if v is None and all(x in ("-", "") for x in r_[i + 1:i + 2]):
+                    v = 0.0
+                if v is not None:
+                    if c in ("국내", "내수"):
+                        dom += v
+                    else:
+                        ovs += v
+                    hits += 1
+                break
+    return {"domestic": dom, "overseas": ovs} if hits >= 2 and dom + ovs > 0 else None
+
+
 def collect_dart_docs(ctx, company, stock_code, ccfg):
     """정기보고서 원문 주석에서 ① 국내/해외 매출(연결, 누적) ② 판관비 중 지급수수료·광고선전비(연결, 누적)를
     자동 파싱해 '분기 단독'값으로 변환·저장한다. 후보 표 전체는 data/review/*.md 로도 남겨 사람이 검증할 수 있게 한다.
@@ -418,8 +447,8 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
 
     for (y, q), rep in sorted(by_period.items()):
         ck = f"{company}|{rep['rcept_no']}"
-        if ck in cache:
-            continue
+        if ck in cache and cache[ck].get("region") is not None:
+            continue                                # 지역 매출 파싱 실패분은 다음 실행 때 다시 시도
         z = ctx.get("https://opendart.fss.or.kr/api/document.xml",
                     params={"crtfc_key": key, "rcept_no": rep["rcept_no"]}, timeout=90)
         with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
@@ -437,7 +466,7 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
                 continue
             # ① 지역 표: 헤더에 국내·해외, '당' 으로 시작하는 행 (첫 번째 = 연결)
             if region is None:
-                region = parse_region_table(rows)
+                region = parse_region_table(rows) or parse_segment_region(rows)
             # ② 판관비 표 (첫 번째 = 연결): '누적' 열이 있으면 누적값, 없으면 첫 숫자(1Q·연간)
             if hit_cost and not costs and "급여" in txt:
                 has_cum = any("누적" in " ".join(r_) for r_ in rows[:3])
@@ -466,7 +495,7 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
             continue                                # 직전 누적이 없으면 단독값 산출 불가
         cum_rev = sum(rev_q.get(f"{y}Q{k}", 0) for k in range(1, q + 1))
         raw_sum = v["region"]["domestic"] + v["region"]["overseas"]
-        unit = min((1, 1000), key=lambda u: abs(raw_sum * u - cum_rev)) if cum_rev else 1000
+        unit = min((1, 1000, 1_000_000), key=lambda u: abs(raw_sum * u - cum_rev)) if cum_rev else 1000
         check = abs(raw_sum * unit / cum_rev - 1) if cum_rev else None
         for acc in ("domestic", "overseas"):
             val = (v["region"][acc] - (prev["region"][acc] if prev else 0)) * unit
