@@ -129,6 +129,8 @@ def collect_naver(ctx, company, ccfg):
     for res in r.json().get("results", []):
         for p in res.get("data", []):
             d = date.fromisoformat(p["period"])
+            if d + timedelta(days=6) >= ctx.today:      # 아직 끝나지 않은 주는 저장하지 않음 (부분 집계로 급락처럼 보임)
+                continue
             rows.append(dict(company=company, source="naver_datalab", metric="search_index",
                              entity=res["title"], geo="KR", period_type="W",
                              period=week_start(d), value=float(p["ratio"]), unit="index(0-100)"))
@@ -371,10 +373,16 @@ def parse_region_table(rows):
         return {"domestic": dom, "overseas": ovs} if dom is not None and ovs is not None else None
     # 가로형
     if any(any(k in h for k in DOM_KEYS) for h in head) and any(any(k in h for k in OVS_HINT) for h in head):
-        for r_ in rows[1:]:
-            if r_ and _is_cur(r_[0]):
-                return split(head[1:], [_num(c) for c in r_[1:]])
-        return None
+        cur = next((r_ for r_ in rows[1:] if r_ and _is_cur(r_[0])), None)
+        prv = next((r_ for r_ in rows[1:] if r_ and r_[0].replace(" ", "").startswith("전")), None)
+        if cur is None:
+            return None
+        out = split(head[1:], [_num(c) for c in cur[1:]])
+        if out and prv:
+            p = split(head[1:], [_num(c) for c in prv[1:]])
+            if p:
+                out.update(prev_domestic=p["domestic"], prev_overseas=p["overseas"])
+        return out
     # 세로형
     cur_col = next((i for i, h in enumerate(head) if _is_cur(h)), None)
     if cur_col is not None:
@@ -394,24 +402,27 @@ def parse_segment_region(rows):
     if not re.search(r"당(분기|반기|기)|제\d+기", head):
         return None
     dom, ovs, hits = 0.0, 0.0, 0
+    pdom, povs = 0.0, 0.0                          # 전년 동기 누적(같은 보고서 기준) — 재분류 탐지용
     for r_ in rows[1:]:
         if r_ and re.match(r"^(합계|총계|계)$", r_[0].replace(" ", "")):
             break                                   # 합계 블록(이후 행 포함)은 부문 합과 중복
         cells = [c.replace(" ", "").lstrip("-") for c in r_]
         for i, c in enumerate(cells):
             if c in ("국내", "내수") or c in ("해외", "국외", "수출"):
-                nums = [_num(x) for x in r_[i + 1:]]
-                v = next((x for x in nums if x is not None), None)
-                if v is None and all(x in ("-", "") for x in r_[i + 1:i + 2]):
-                    v = 0.0
+                raw = r_[i + 1:]
+                vals = [0.0 if x.strip() in ("-", "") else _num(x) for x in raw[:2]]
+                v = vals[0] if vals else None
+                pv = vals[1] if len(vals) > 1 else None
                 if v is not None:
                     if c in ("국내", "내수"):
-                        dom += v
+                        dom += v; pdom += pv or 0
                     else:
-                        ovs += v
+                        ovs += v; povs += pv or 0
                     hits += 1
                 break
-    return {"domestic": dom, "overseas": ovs} if hits >= 2 and dom + ovs > 0 else None
+    if hits >= 2 and dom + ovs > 0:
+        return {"domestic": dom, "overseas": ovs, "prev_domestic": pdom, "prev_overseas": povs}
+    return None
 
 
 def collect_dart_docs(ctx, company, stock_code, ccfg):
@@ -447,8 +458,8 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
 
     for (y, q), rep in sorted(by_period.items()):
         ck = f"{company}|{rep['rcept_no']}"
-        if ck in cache and cache[ck].get("region") is not None:
-            continue                                # 지역 매출 파싱 실패분은 다음 실행 때 다시 시도
+        if ck in cache and cache[ck].get("region") is not None and cache[ck].get("v", 1) >= 2:
+            continue                                # 지역 매출 파싱 실패분·구버전 파싱은 다시 시도
         z = ctx.get("https://opendart.fss.or.kr/api/document.xml",
                     params={"crtfc_key": key, "rcept_no": rep["rcept_no"]}, timeout=90)
         with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
@@ -480,7 +491,7 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
             lines.append(f"## {'부문/지역' if hit_seg else '비용'} 후보 표")
             lines += ["| " + " | ".join(r_) + " |" for r_ in rows[:40]] + [""]
         (review_dir / f"{company}_{rep['rcept_no']}.md").write_text("\n".join(lines), encoding="utf-8")
-        cache[ck] = {"year": y, "q": q, "region": region, "costs": costs, "report": rep["report_nm"]}
+        cache[ck] = {"year": y, "q": q, "region": region, "costs": costs, "report": rep["report_nm"], "v": 2}
     parsed_cache.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # 누적 → 분기 단독 변환 + 단위 판별
@@ -488,6 +499,17 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
                                  "AND account='revenue'", (company,)).fetchall())
     ytd = {(v["year"], v["q"]): v for k, v in cache.items()
            if k.startswith(company + "|") and v.get("region") is not None}
+    def restated(y, q):
+        """이 보고서의 '전년 동기 누적'이 1년 전 보고서의 '당기 누적'과 3% 넘게 다르면 지역 분류가 바뀐 것."""
+        v, old = ytd.get((y, q)), ytd.get((y - 1, q))
+        if not v or not old or v["region"].get("prev_domestic") is None:
+            return False
+        for acc in ("domestic", "overseas"):
+            a, b = v["region"].get(f"prev_{acc}"), old["region"][acc]
+            if b and a is not None and abs(a / b - 1) > 0.03:
+                return True
+        return False
+
     out = []
     for (y, q), v in sorted(ytd.items()):
         prev = ytd.get((y, q - 1)) if q > 1 else None
@@ -497,15 +519,26 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
         raw_sum = v["region"]["domestic"] + v["region"]["overseas"]
         unit = min((1, 1000, 1_000_000), key=lambda u: abs(raw_sum * u - cum_rev)) if cum_rev else 1000
         check = abs(raw_sum * unit / cum_rev - 1) if cum_rev else None
+        flags = []
+        if check is not None and check > 0.02:
+            flags.append(f"매출합 오차 {check:.0%}")
+        if q > 1 and restated(y, q) != restated(y, q - 1):
+            flags.append("보고서 간 지역 분류 변경 의심")
+        basis = "parsed(YTD diff" + (f", 매출합 오차 {check:.1%}" if check is not None else "") + ")"
+        if flags:
+            basis = "⚠ " + " / ".join(flags) + " · " + basis
         for acc in ("domestic", "overseas"):
             val = (v["region"][acc] - (prev["region"][acc] if prev else 0)) * unit
             out.append(dict(company=company, stock_code=stock_code, quarter=f"{y}Q{q}", account=acc,
-                            scope="REGION", value=val,
-                            basis=f"parsed(YTD diff, 매출합 오차 {check:.1%})" if check is not None else "parsed"))
+                            scope="REGION", value=val, basis=basis))
         for acc, cum in v["costs"].items():
-            pc = (prev or {}).get("costs", {}).get(acc, 0) if q > 1 else 0
+            if q > 1 and acc not in (prev or {}).get("costs", {}):
+                continue                            # 직전 누적이 없으면 누적값이 그대로 들어가므로 제외
+            pc = prev["costs"][acc] if q > 1 else 0
             out.append(dict(company=company, stock_code=stock_code, quarter=f"{y}Q{q}", account=acc,
                             scope="COST", value=(cum - pc) * unit, basis="parsed(YTD diff)"))
+    # 이전 실행에서 잘못 들어간 비용 행 정리 후 저장
+    ctx.con.execute("DELETE FROM financials WHERE company=? AND scope='COST'", (company,))
     return db.upsert_financials(ctx.con, out) if out else 0
 
 
@@ -805,9 +838,46 @@ def ingest_manual(ctx, company, ccfg):
 
 
 # -----------------------------------------------------------------------------
+# 9) 시장 데이터 (밸류에이션용): 종가(네이버 금융 공개 시세) + 발행주식수(OpenDART)
+# -----------------------------------------------------------------------------
+def collect_market(ctx, company, stock_code):
+    import ast
+    start = (ctx.today - timedelta(days=400)).strftime("%Y%m%d")
+    r = ctx.get("https://api.finance.naver.com/siseJson.naver",
+                params={"symbol": stock_code, "requestType": 1, "startTime": start,
+                        "endTime": ctx.today.strftime("%Y%m%d"), "timeframe": "day"})
+    r.raise_for_status()
+    data = ast.literal_eval(r.text.strip())
+    rows = [dict(company=company, source="market", metric="close", entity="close", period_type="D",
+                 period=f"{d[0][:4]}-{d[0][4:6]}-{d[0][6:8]}", value=float(d[4]), unit="KRW")
+            for d in data[1:] if len(d) > 4 and d[4]]
+    key = os.getenv("DART_API_KEY")
+    if key:
+        corp = dart_corp_code(ctx, stock_code)
+        for y in (ctx.today.year, ctx.today.year - 1):
+            got = False
+            for rc in ("11014", "11012", "11013", "11011"):
+                js = ctx.get("https://opendart.fss.or.kr/api/stockTotqySttus.json",
+                             params={"crtfc_key": key, "corp_code": corp, "bsns_year": y, "reprt_code": rc}).json()
+                if js.get("status") != "000":
+                    continue
+                tot = next((x for x in js["list"] if x.get("se") in ("합계", "보통주")), None)
+                if tot and _num(tot.get("istc_totqy")):
+                    rows.append(dict(company=company, source="market", metric="shares", entity="shares",
+                                     period_type="D", period=ctx.today.isoformat(),
+                                     value=_num(tot["istc_totqy"]), unit="shares"))
+                    got = True; break
+            if got:
+                break
+    if not rows:
+        raise RuntimeError("시세 0건")
+    return db.upsert_metrics(ctx.con, rows)
+
+
+# -----------------------------------------------------------------------------
 # 실행
 # -----------------------------------------------------------------------------
-SOURCES = ["manual", "naver", "gtrends", "fx", "tranco", "dart", "dart_docs", "pages", "catalog", "chat", "peers"]
+SOURCES = ["manual", "naver", "gtrends", "fx", "tranco", "dart", "dart_docs", "pages", "catalog", "chat", "market", "peers"]
 
 
 def main():
@@ -835,6 +905,7 @@ def main():
         if "catalog" in only and (c.get("chat_catalog") or {}).get("item_selector"):
             run_source(ctx, cid, "chat_catalog", collect_catalog, c)
         if "chat" in only:      run_source(ctx, cid, "chat_stats", collect_chat_stats, c)
+        if "market" in only:    run_source(ctx, cid, "market", collect_market, c["stock_code"])
 
     if "peers" in only:
         print("== 동종사")

@@ -34,8 +34,8 @@ h1{font-size:20px;margin:0} h2{font-size:15px;margin:0 0 10px} h3{font-size:13px
 .tabs button.on{border-color:var(--series-1);box-shadow:inset 0 0 0 1px var(--series-1)}
 .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
 .card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:16px}
-.c12{grid-column:span 12}.c8{grid-column:span 8}.c6{grid-column:span 6}.c4{grid-column:span 4}.c3{grid-column:span 3}
-@media(max-width:1000px){.c8,.c6,.c4,.c3{grid-column:span 12}}
+.c12{grid-column:span 12}.c7{grid-column:span 7}.c5{grid-column:span 5}.c8{grid-column:span 8}.c6{grid-column:span 6}.c4{grid-column:span 4}.c3{grid-column:span 3}
+@media(max-width:1000px){.c8,.c7,.c6,.c5,.c4,.c3{grid-column:span 12!important}}
 .tile .v{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:4px}
 .tile .s{font-size:12px;color:var(--text-secondary);margin-top:4px}
 .up{color:var(--up)} .down{color:var(--critical)}
@@ -75,6 +75,7 @@ const DATA = /*__DATA__*/null;
 const css = n => getComputedStyle(document.querySelector('.viz-root')).getPropertyValue(n).trim();
 const SLOT = i => css(`--series-${(i % 8) + 1}`);
 const pct = (x, d=1) => x == null ? 'N/A' : `${x > 0 ? '+' : ''}${(x * 100).toFixed(d)}%`;
+const pl = (x, d=1) => x == null ? '–' : `${(x * 100).toFixed(d)}%`;
 const eok = x => x == null ? '–' : `${(x / 1e8).toLocaleString('ko-KR', {maximumFractionDigits: 0})}억`;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let charts = [];
@@ -140,19 +141,84 @@ function render(co) {
       `<h3>자동 요약 (규칙 기반${cm ? ' · LLM 코멘터리가 10일 이상 지나 숨김' : ''})</h3>`;
   const kw = Object.entries(nc.wow || {});
 
+  const pv = co.preview || {};
+  const sc = co.scorecard || [];
+  const adopted = sc.filter(c => c.status === '채택');
+  const failed = sc.filter(c => c.status === '검증 미달');
+  const waiting = sc.filter(c => c.status.startsWith('검증 대기'));
+  const iss = co.issues || [];
+  const nIss = lv => iss.filter(i => i.level === lv).length;
+  const v = co.valuation;
+  const k = co.kpis || [];
+  const lastK = k[k.length - 1] || {};
+  const seas = pv.seasonal || {};
+  const n1 = x => x == null ? '–' : Number(x).toFixed(1);
+  const costKeys = [...new Set(k.flatMap(r => Object.keys(r).filter(x => x.startsWith('cost_'))))];
+
   app.innerHTML = `
   <div class="grid">
-    <div class="card c8">${llm}<ul class="summary">${co.auto_summary.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>
-    <div class="card c4"><h2>데이터 상태</h2><table><tr><th>소스</th><th>상태</th><th>최근 실행</th></tr>
-      ${co.status.map(s => `<tr title="${esc(s.message)}"><td>${esc(s.source)}</td><td><span class="badge b-${s.status}">${s.status}</span></td><td class="meta">${esc((s.run_at||'').slice(0,10))}</td></tr>`).join('')}
-      </table><div class="note">행에 마우스를 올리면 실패 사유가 보입니다.</div></div>
+    <div class="card c8">
+      <h2>${esc(pv.target_quarter || '')} 매출 프리뷰 <span class="meta">· 다음 정기보고서 예상 ${esc(pv.next_filing || '–')} (작년 같은 분기 제출일 기준)</span></h2>
+      <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:flex-end">
+        <div><div class="meta">추정 매출</div><div style="font-size:34px;font-weight:700">${eok(pv.estimate)}</div>
+          <div class="meta">범위 ${eok(pv.low)} ~ ${eok(pv.high)} (기준선 과거 평균오차 ±${pv.band_pct != null ? (pv.band_pct*100).toFixed(1) : '–'}%, n=${pv.band_n || 0})</div></div>
+        <div><div class="meta">직전 분기 ${esc(pv.last_quarter || '')}</div><div style="font-size:20px;font-weight:650">${eok(pv.last_revenue)}</div>
+          <div class="meta">QoQ <span class="${sign(lastK.rev_qoq)}">${pct(lastK.rev_qoq)}</span> · YoY <span class="${sign(lastK.rev_yoy)}">${pct(lastK.rev_yoy)}</span> · OPM ${pl(lastK.opm)}</div></div>
+        <div><div class="meta">추정치의 전년 동기 대비</div><div style="font-size:20px;font-weight:650" class="${sign(pv.implied_yoy)}">${pct(pv.implied_yoy)}</div>
+          <div class="meta">비교 ${eok(pv.yoy_base)}</div></div>
+      </div>
+      <ul class="summary" style="margin-top:12px">
+        <li><b>추정 방법</b> ${esc(pv.method || '')}. ${pv.validated ? '' : '검증 기준을 통과한 대체데이터 지표가 아직 없어, 매출을 가장 잘 맞혀 온 단순 기준선(직전 분기 유지)을 그대로 씁니다.'}</li>
+        <li><b>계절성 참고</b> 과거 ${seas.n || 0}개 같은 분기 QoQ: ${seas.up || 0}회 상승, 중앙값 ${pct(seas.median)} ${seas.history && seas.history.length ? '(' + seas.history.map(h => h[0] + ' ' + pct(h[1])).join(', ') + ')' : ''}</li>
+        <li><b>대체데이터 원신호</b> QTD 합산 ${pct(pv.raw_alt_signal)} (${esc(pv.raw_alt_direction || '')}) — 검증 미통과 지표 포함, 추정치에는 반영하지 않음</li>
+      </ul>
+      ${cm && !cm._stale ? llm : ''}
+    </div>
 
-    ${tile(`${nc.target_quarter} 합산 신호 (QTD ${nc.weeks_elapsed}주)`, pct(nc.g_total), `<span class="badge b-${nc.direction}">${nc.direction}</span> 해외비중 ${(nc.overseas_share*100).toFixed(0)}% · ${esc(nc.overseas_share_source)}`, sign(nc.g_total))}
-    ${tile('국내 신호 QoQ', pct(nc.g_domestic), `계절조정 ${pct(nc.g_domestic_sa)} · 네이버+국내 트래픽`, sign(nc.g_domestic))}
-    ${tile('해외 신호 QoQ (환율 반영)', pct(nc.g_overseas), Object.entries(nc.fx_effect||{}).map(([k,v]) => `${esc(k)} 환율 ${pct(v)}`).join(' · ') || '해외 데이터 없음', sign(nc.g_overseas))}
-    ${tile(`${nc.target_quarter} 매출 나우캐스트`, eok(nc.revenue_nowcast), `기준 ${nc.base_quarter} ${eok(nc.revenue_base)} · β ${nc.beta.toFixed(2)} (${esc(nc.beta_note)})`)}
+    <div class="card c4">
+      <h2>밸류에이션 (TTM)</h2>
+      ${v ? `<table>
+        <tr><td>주가 (${esc(v.price_date)})</td><td class="n">${Number(v.price).toLocaleString()}원</td></tr>
+        <tr><td>시가총액</td><td class="n">${eok(v.mcap)}</td></tr>
+        <tr><td>TTM 매출 / 영업이익 / 순이익 (~${esc(v.ttm_through)})</td><td class="n">${eok(v.ttm_revenue)} / ${eok(v.ttm_op)} / ${eok(v.ttm_ni)}</td></tr>
+        <tr><td>PSR</td><td class="n">${n1(v.psr)}배</td></tr>
+        <tr><td>시총/영업이익</td><td class="n">${n1(v.por)}배</td></tr>
+        <tr><td>PER</td><td class="n">${n1(v.per)}배</td></tr></table>
+        <div class="note">발행주식수(DART) × 종가(네이버 금융). 자기주식 미차감.</div>` : '<div class="empty">다음 수집부터 표시</div>'}
+      <h2 style="margin-top:16px">동종사 최근 분기</h2>
+      <table><tr><th>기업</th><th>분기</th><th class="n">매출</th><th class="n">YoY</th><th class="n">OPM</th></tr>
+      ${(DATA.peer_table||[]).map(p => `<tr><td>${esc(p.name)}</td><td>${esc(p.quarter)}</td><td class="n">${eok(p.revenue)}</td><td class="n ${sign(p.yoy)}">${pct(p.yoy)}</td><td class="n">${pl(p.opm)}</td></tr>`).join('')}
+      </table>
+    </div>
 
-    <div class="card c12"><h2>주간 검색량 추이 (네이버 데이터랩, 한국)</h2>
+    <div class="card c12"><h2>분기 실적 요약 (DART, 분기 단독)</h2>
+      <table><tr><th>분기</th><th class="n">매출</th><th class="n">QoQ</th><th class="n">YoY</th><th class="n">영업이익</th><th class="n">OPM</th>
+        <th class="n">국내</th><th class="n">국내 YoY</th><th class="n">해외</th><th class="n">해외 YoY</th>
+        ${costKeys.map(c => `<th class="n">${esc(c.slice(5))}/매출</th>`).join('')}</tr>
+      ${k.slice().reverse().map(r => `<tr><td>${r.quarter}${r.region_suspect ? ' <span title="지역 매출 정합성 경고">⚠</span>' : ''}</td>
+        <td class="n">${eok(r.revenue)}</td><td class="n ${sign(r.rev_qoq)}">${pct(r.rev_qoq)}</td><td class="n ${sign(r.rev_yoy)}">${pct(r.rev_yoy)}</td>
+        <td class="n">${eok(r.op)}</td><td class="n">${pl(r.opm)}</td>
+        <td class="n">${eok(r.domestic)}</td><td class="n ${sign(r.dom_yoy)}">${r.region_suspect ? '⚠ ' : ''}${pct(r.dom_yoy)}</td>
+        <td class="n">${eok(r.overseas)}</td><td class="n ${sign(r.ovs_yoy)}">${r.region_suspect ? '⚠ ' : ''}${pct(r.ovs_yoy)}</td>
+        ${costKeys.map(c => `<td class="n">${pl(r[c])}</td>`).join('')}</tr>`).join('')}
+      </table>
+      <div class="note">합병 전 분기와 비교하는 전년 대비(YoY)는 표시하지 않습니다. ⚠ 표시가 있는 분기의 국내/해외 값은 공시 분류 문제로 추세 판단에서 제외하세요. 비용 비율은 파싱 이상치를 뺀 값입니다.</div></div>
+
+    <div class="card c7"><h2>대체데이터 지표 스코어카드 <span class="meta">· 분기 QoQ 기준, 채택 기준 n≥${co.gate.n} · 방향 적중≥${co.gate.hit*100}% · 상관≥${co.gate.corr}</span></h2>
+      <table><tr><th>지표</th><th>대상</th><th class="n">n</th><th class="n">상관</th><th class="n">방향 적중</th><th>판정</th></tr>
+      ${[...adopted, ...failed].map(c => `<tr><td>${esc(c.indicator)}</td><td class="meta">${esc(c.target)}</td><td class="n">${c.n}</td>
+        <td class="n">${c.corr == null ? '–' : c.corr.toFixed(2)}</td><td class="n">${c.hit == null ? '–' : (c.hit*100).toFixed(0) + '%'}</td>
+        <td><span class="badge b-${c.status === '채택' ? 'OK' : 'FAILED'}">${esc(c.status)}</span></td></tr>`).join('')}
+      </table>
+      <div class="note">검증 대기 ${waiting.length}개: ${waiting.map(c => esc(c.indicator)).join(', ')} — 탑툰챗·티즈 활동량과 Similarweb은 이력이 쌓이면 자동으로 평가됩니다(최소 ${co.gate.n}개 분기 QoQ 필요).</div></div>
+
+    <div class="card c5"><h2>정합성 점검 <span class="meta">· 경고 ${nIss('경고')} · 주의 ${nIss('주의')} · 수집 ${nIss('수집')}</span></h2>
+      <table>${iss.map(i => `<tr><td><span class="badge b-${i.level === '경고' ? 'FAILED' : i.level === '주의' ? 'MANUAL_REQUIRED' : 'CONFIG_REQUIRED'}">${esc(i.level)}</span></td><td>${esc(i.item)}</td><td class="meta">${esc(i.detail)}</td></tr>`).join('') || '<tr><td class="empty">이상 없음</td></tr>'}</table>
+      <details style="margin-top:8px"><summary>수집 소스별 상태</summary><table>
+      ${co.status.map(s => `<tr><td>${esc(s.source)}</td><td><span class="badge b-${s.status}">${s.status}</span></td><td class="meta">${esc((s.run_at||'').slice(0,10))} ${esc((s.message||'').slice(0,80))}</td></tr>`).join('')}
+      </table></details></div>
+
+    <div class="card c12"><h2>원자료 · 주간 검색량 (네이버 데이터랩, 한국) <span class="meta">· 스코어카드상 매출 설명력 낮음</span></h2>
       <div class="meta" style="margin-bottom:6px">${kw.map(([k,v]) => `${esc(k)}: 최근주 ${v.last.toFixed(1)} · WoW <span class="${sign(v.wow)}">${pct(v.wow)}</span> · 4주 <span class="${sign(v.m4)}">${pct(v.m4)}</span>`).join(' &nbsp;|&nbsp; ')}</div>
       <div class="chartbox" id="ch-naver"></div>
       <div class="note">점선 = 동종사. 지수는 요청 구간 내 최댓값=100 기준이라 매주 전체 구간을 다시 받아 덮어씁니다.</div></div>
@@ -163,12 +229,12 @@ function render(co) {
       <div class="note">원화 환산 효과. 지수가 오르면 해당 통화 매출의 원화 환산액이 늘어납니다.</div></div>
     <div class="card c6"><h2>Tranco 도메인 순위 (낮을수록 상위)</h2><div class="chartbox" id="ch-tr"></div></div>
 
-    <div class="card c8"><h2>분기 실적 (DART, 분기 단독) + 나우캐스트</h2><div class="chartbox" id="ch-fin"></div>
-      <div class="note">4분기 = 사업보고서 연간 − 3분기 누적. 마지막 막대(연한 색)는 추정치입니다.</div></div>
+    <div class="card c8"><h2>분기 매출 추이 (DART, 분기 단독) + 프리뷰 추정</h2><div class="chartbox" id="ch-fin"></div>
+      <div class="note">4분기 = 사업보고서 연간 − 3분기 누적. 마지막 막대(연한 색)는 프리뷰 추정치이며, 범위는 상단 프리뷰를 참고하세요.</div></div>
     <div class="card c4"><h2>영업이익률</h2><div class="chartbox" id="ch-opm"></div></div>
 
     <div class="card c6"><h2>국내/해외 분기 매출 (DART 주석, 누적 차감)</h2><div class="chartbox" id="ch-region"></div>
-      <div class="note">국내·해외 매출은 연결 주석 '지역별 매출'의 연초 누적값에서 직전 보고서 누적을 빼 분기 단독으로 만든 값입니다.</div></div>
+      <div class="note">국내·해외 매출은 연결 주석의 연초 누적값에서 직전 보고서 누적을 빼 만든 분기 단독값입니다. 회색(⚠) 분기는 공시 분류가 앞뒤 분기와 맞지 않아 추세 판단에서 제외하세요.</div></div>
     <div class="card c6"><h2>비용 / 매출 (지급수수료 · 광고선전비)</h2><div class="chartbox" id="ch-cost"></div>
       <div class="note">지급수수료에는 플랫폼·결제 수수료, 외부 IP 로열티, AI 추론 비용이 섞여 있을 수 있습니다. 탑툰챗 IP 믹스와 함께 보세요.</div></div>
 
@@ -176,7 +242,7 @@ function render(co) {
       <div class="note">지난주와 이번 주에 모두 노출된 작품만 비교해서 신규 작품 진입 효과를 뺐습니다. 수치는 '25만' 같은 반올림 표기라 작은 증분은 0으로 보일 수 있습니다.
       두 번째 주부터 값이 생깁니다.</div></div>
 
-    <div class="card c6"><h2>백테스트 (분기 종료 시점 신호 vs 실제 매출 QoQ)</h2>
+    <div class="card c6"><h2>원신호 백테스트 (검증 전 합산 신호 vs 실제 매출 QoQ)</h2>
       <table><tr><th>분기</th><th>모델</th><th class="n">신호</th><th class="n">실제</th><th>방향</th></tr>
       ${(nc.backtest||[]).slice().reverse().map(r => `<tr><td>${r.quarter}</td><td class="meta">${r.model === 'total' ? '합산' : '해외 대리('+r.regime+')'}</td>
         <td class="n">${pct(r.g_signal)}</td><td class="n">${pct(r.actual_qoq)}</td>
@@ -224,8 +290,17 @@ function render(co) {
   const peerKeys = Object.keys(co.naver).filter(k => !co.own_groups.includes(k));
   lineChart(document.getElementById('ch-naver'), co.naver, {yTitle: '지수', dashedKeys: peerKeys});
   lineChart(document.getElementById('ch-gt'), co.gtrends, {yTitle: '지수'});
-  lineChart(document.getElementById('ch-sw'), Object.fromEntries(Object.entries(co.similarweb).map(([k, v]) => [k, v.points])),
-            {fmt: v => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v});
+  const swMax = Math.max(0, ...Object.values(co.similarweb).map(v => v.points.length));
+  if (swMax >= 3) {
+    lineChart(document.getElementById('ch-sw'), Object.fromEntries(Object.entries(co.similarweb).map(([k, v]) => [k, v.points])),
+              {fmt: v => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v});
+  } else {
+    const ent = Object.entries(co.similarweb);
+    document.getElementById('ch-sw').innerHTML = ent.length ? `<table><tr><th>도메인</th><th>월</th><th class="n">방문</th><th class="n">체류(초)</th><th class="n">한국 비중</th></tr>
+      ${ent.map(([d, v]) => v.points.map(p => `<tr><td>${esc(d)}</td><td>${p[0].slice(0,7)}</td><td class="n">${Number(p[1]).toLocaleString()}</td>
+        <td class="n">${(v.duration.find(x => x[0] === p[0]) || [,'–'])[1]}</td><td class="n">${pl((v.kr_share.find(x => x[0] === p[0]) || [,null])[1])}</td></tr>`).join('')).join('')}</table>
+      <div class="note">3개월 이상 쌓이면 추이 차트로 바뀝니다.</div>` : '<div class="empty">아직 입력 없음 — 하단 입력 폼 사용</div>';
+  }
   lineChart(document.getElementById('ch-fx'), co.fx, {fmt: v => Number(v).toFixed(0)});
   lineChart(document.getElementById('ch-tr'), co.tranco, {reverse: true, fmt: v => Number(v).toLocaleString()});
 
@@ -233,8 +308,8 @@ function render(co) {
   const labels = fin.map(f => f.quarter);
   const revData = fin.map(f => f.revenue != null ? f.revenue / 1e8 : null);
   const colors = fin.map(() => SLOT(0));
-  if (nc.revenue_nowcast && !labels.includes(nc.target_quarter)) {
-    labels.push(nc.target_quarter + ' (E)'); revData.push(nc.revenue_nowcast / 1e8); colors.push(SLOT(0) + '66');
+  if (pv.estimate && !labels.includes(pv.target_quarter)) {
+    labels.push(pv.target_quarter + ' (E)'); revData.push(pv.estimate / 1e8); colors.push(SLOT(0) + '55');
   }
   barChart(document.getElementById('ch-fin'), labels,
            [{label: '매출(억원)', data: revData, backgroundColor: colors}], {fmt: v => Number(v).toFixed(0)});
@@ -243,9 +318,12 @@ function render(co) {
 
   const rq = [...new Set([...(co.region.domestic||[]), ...(co.region.overseas||[])].map(p => p[0]))].sort().slice(-12);
   const rm = k => new Map(co.region[k] || []);
-  barChart(document.getElementById('ch-region'), rq, [
-    {label: '국내(억원)', data: rq.map(q => rm('domestic').has(q) ? rm('domestic').get(q) / 1e8 : null)},
-    {label: '해외(억원)', data: rq.map(q => rm('overseas').has(q) ? rm('overseas').get(q) / 1e8 : null)},
+  const susQ = new Set((co.region.domestic_suspect || []).map(p => p[0]));
+  barChart(document.getElementById('ch-region'), rq.map(q => susQ.has(q) ? q + ' ⚠' : q), [
+    {label: '국내(억원)', data: rq.map(q => rm('domestic').has(q) ? rm('domestic').get(q) / 1e8 : null),
+     backgroundColor: rq.map(q => susQ.has(q) ? css('--axis') : SLOT(0))},
+    {label: '해외(억원)', data: rq.map(q => rm('overseas').has(q) ? rm('overseas').get(q) / 1e8 : null),
+     backgroundColor: rq.map(q => susQ.has(q) ? css('--grid') : SLOT(1))},
   ], {fmt: v => Number(v).toFixed(0)});
   lineChart(document.getElementById('ch-cost'), co.cost_ratio || {}, {fmt: v => (v*100).toFixed(0)+'%'});
   lineChart(document.getElementById('ch-chat'), (co.chat || {})['주간 증분'] || {}, {fmt: v => v >= 1e4 ? (v/1e4).toFixed(1)+'만' : Number(v).toFixed(0)});

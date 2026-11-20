@@ -156,7 +156,7 @@ def _sum_series(series_list, fill_zero=False):
     fill_zero=False: 수동 입력 등은 모든 구성요소가 있는 시점만 합산"""
     s = [x for x in series_list if not x.empty]
     if not s:
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     df = pd.concat(s, axis=1)
     return (df.fillna(0) if fill_zero else df.dropna()).sum(axis=1)
 
@@ -167,7 +167,7 @@ def _region_visits(df, d, region):
     if d["region"] == "split":
         sh = weekly(df, "similarweb", d["domain"], metric="kr_share")
         if sh.empty:
-            return pd.Series(dtype=float)        # 국가 비중 없으면 섞어 쓰지 않음
+            return pd.Series(dtype=float, index=pd.DatetimeIndex([]))   # 국가 비중 없으면 섞어 쓰지 않음
         sh = sh.reindex(v.index)
         v = (v * (sh if region == "domestic" else 1 - sh)).dropna()
     return v

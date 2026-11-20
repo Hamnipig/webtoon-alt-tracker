@@ -19,6 +19,7 @@ import pandas as pd
 import yaml
 
 import db
+import evaluate
 import nowcast
 
 ROOT = Path(__file__).parent
@@ -57,10 +58,15 @@ def weekly_resample(points, how="mean"):
 
 
 def status_table(con, company):
+    """가장 최근 실행(마지막 기록 2시간 이내)에 남은 상태만 — 지난 실행의 실패 기록이 남아 있지 않도록."""
+    last = con.execute("SELECT MAX(run_at) FROM run_log WHERE company=?", (company,)).fetchone()[0]
+    if not last:
+        return []
+    cutoff = (datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ") - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     q = """SELECT source, status, rows, message, MAX(run_at) AS run_at FROM run_log
-           WHERE company=? GROUP BY source ORDER BY source"""
+           WHERE company=? AND run_at>=? GROUP BY source ORDER BY source"""
     return [dict(source=s, status=st, rows=r, message=m, run_at=t)
-            for s, st, r, m, t in con.execute(q, (company,)).fetchall()]
+            for s, st, r, m, t in con.execute(q, (company, cutoff)).fetchall()]
 
 
 def auto_summary(nc, status):
@@ -88,7 +94,8 @@ def build_company(con, cid, ccfg, cfg, as_of):
     since = (as_of - timedelta(days=365 * 3)).isoformat()
 
     nd = ccfg.get("naver_datalab", {})
-    naver = {g["name"]: series(df, "naver_datalab", "search_index", g["name"], "KR", since)
+    done = lambda pts: [p for p in pts if date.fromisoformat(p[0]) + timedelta(days=6) < as_of]   # 완결 주만
+    naver = {g["name"]: done(series(df, "naver_datalab", "search_index", g["name"], "KR", since))
              for g in nd.get("groups", []) + nd.get("peer_groups", [])}
     own_groups = [g["name"] for g in nd.get("groups", [])]
 
@@ -96,7 +103,7 @@ def build_company(con, cid, ccfg, cfg, as_of):
     gtrends = {}
     for geo in gt_cfg.get("geos", []):
         for kw in gt_cfg.get("keywords", []):
-            pts = series(df, "google_trends", "search_index", kw, geo, since)
+            pts = done(series(df, "google_trends", "search_index", kw, geo, since))
             if pts:
                 gtrends[f"{geo} · {kw}"] = pts
 
@@ -144,9 +151,11 @@ def build_company(con, cid, ccfg, cfg, as_of):
         sub = fin[(fin.scope == "REGION") & (fin.account == acc)].sort_values("quarter")
         region[acc] = [[q, v] for q, v in zip(sub.quarter, sub.value)]
     cost_ratio = {}
+    bad_cost = {tuple(i["item"].split()[:2]) for i in evaluate.integrity(fin, []) if i["level"] == "주의"}
     for acc in sorted(set(fin[fin.scope == "COST"].account)):
         sub = fin[(fin.scope == "COST") & (fin.account == acc)].sort_values("quarter")
-        cost_ratio[acc] = [[q, v / rev_map[q]] for q, v in zip(sub.quarter, sub.value) if rev_map.get(q)]
+        cost_ratio[acc] = [[q, v / rev_map[q]] for q, v in zip(sub.quarter, sub.value)
+                           if rev_map.get(q) and (q, acc) not in bad_cost]   # 파싱 이상치 제외
     chat = {}
     for s in ccfg.get("chat_sites", []):
         sm = s.get("signal_metric", "m2")
@@ -170,7 +179,19 @@ def build_company(con, cid, ccfg, cfg, as_of):
         except ValueError:
             commentary["_stale"] = True
 
+    # 투자 판단 레이어: 스코어카드 → 프리뷰(검증 지표만 반영) → 정합성 → KPI·공시일·밸류에이션
+    cards = evaluate.scorecard(df, fin, ccfg, as_of)
+    pv = evaluate.preview(df, fin, ccfg, cards, as_of, nc)
+    issues = evaluate.integrity(fin, status)
+    if pv:
+        pv["next_filing"] = evaluate.next_filing(fin, pv["target_quarter"])
+    sus = evaluate.suspect_quarters(issues)
+    for k in ("domestic", "overseas"):          # 정합성 의심 분기는 차트에서 표시용으로 분리
+        region[k + "_suspect"] = [p for p in region.get(k, []) if p[0] in sus]
     return dict(id=cid, name=ccfg["name"], stock_code=ccfg["stock_code"],
+                preview=pv, kpis=evaluate.kpi_table(fin, issues, first_full=ccfg.get('structural_breaks', {}).get('domestic_first_full_quarter', '2000Q1')), issues=issues,
+                scorecard=[{k: v for k, v in c.items() if not k.startswith("_")} for c in cards],
+                valuation=evaluate.valuation(df, fin), gate=evaluate.GATE,
                 nowcast=nc, status=status, auto_summary=auto_summary(nc, status),
                 commentary=commentary, naver=naver, own_groups=own_groups, gtrends=gtrends,
                 similarweb=sw, fx=fx, tranco=tranco, ip_mix=ip_mix, financials=fin_tbl,
@@ -201,7 +222,7 @@ def main():
                  for cid, c in cfg["companies"].items() if c.get("enabled")]
     payload = clean(dict(generated_at=datetime.now().strftime("%Y-%m-%d %H:%M"), as_of=as_of.isoformat(),
                          repo=os.getenv("GITHUB_REPOSITORY", ""), companies=companies,
-                         peers=build_peers(con, cfg)))
+                         peers=build_peers(con, cfg), peer_table=evaluate.peers(con, cfg)))
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     js = json.dumps(payload, ensure_ascii=False)
     (out / "data.json").write_text(js, encoding="utf-8")
