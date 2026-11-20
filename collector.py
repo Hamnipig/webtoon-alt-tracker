@@ -396,7 +396,7 @@ def parse_segment_region(rows):
     dom, ovs, hits = 0.0, 0.0, 0
     for r_ in rows[1:]:
         if r_ and re.match(r"^(합계|총계|계)$", r_[0].replace(" ", "")):
-            continue                                # 합계 행의 국내/해외는 부문 합과 중복
+            break                                   # 합계 블록(이후 행 포함)은 부문 합과 중복
         cells = [c.replace(" ", "").lstrip("-") for c in r_]
         for i, c in enumerate(cells):
             if c in ("국내", "내수") or c in ("해외", "국외", "수출"):
