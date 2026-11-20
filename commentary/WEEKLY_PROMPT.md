@@ -1,5 +1,13 @@
 # 주간 애널리스트 코멘터리 작업 지시서 (Claude 예약 작업용)
 
+대상 종목: data.json의 companies 전부 (현재 엔키AX `enkeyax`, 키다리스튜디오 `kidari`). 종목마다 아래 절차를 수행하고
+`commentary/<company id>.json` 을 각각 쓴다.
+
+종목별 관전 포인트
+- 엔키AX: 탑툰챗 국가별 대화 수(chat:kr/jp/tw/global), 일본 트래픽 대비 해외 매출 괴리, 지급수수료/매출
+- 키다리스튜디오: 해외 플랫폼(레진US·벨툰JP·봄툰TW·레진FR) 성장 지속 여부, 티즈(myteaz.io) 주간 메시지 수 증분(chat:teaz),
+  레진스낵(숏드라마)·MD 등 IP 커머스 언급, 외환손익(3Q26 순이익 적자 요인) — 단 외환은 영업외라 매출 신호와 구분해 서술
+
 매주 월요일 수집 Action이 끝난 뒤(10:30 KST 이후) 실행한다. 결과는 `commentary/<company>.json`으로 커밋하며,
 push 이벤트가 대시보드를 다시 빌드한다.
 
@@ -30,7 +38,7 @@ push 이벤트가 대시보드를 다시 빌드한다.
 - 데이터 상태가 FAILED나 MANUAL_REQUIRED인 소스에 기반한 결론은 쓰지 않는다. 대신 그 사실을 적는다.
 - key_takeaways는 최대 3줄이고, 각 줄에 수치를 최소 1개 넣는다.
 
-## 출력 (commentary/enkeyax.json)
+## 출력 (commentary/<company id>.json — 아래는 엔키AX 예시, company 값만 종목에 맞게)
 ```json
 {
   "as_of_date": "YYYY-MM-DD",
