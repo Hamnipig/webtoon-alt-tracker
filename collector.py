@@ -559,7 +559,8 @@ def collect_catalog(ctx, company, ccfg):
 # -----------------------------------------------------------------------------
 # 7-b) 탑툰챗 공개 지표 (국가별 사이트, 작품·캐릭터 카드의 누적 수치)
 #   카드 텍스트 예: "MULTI VOICE 23만 1.4만 여사친은 SOLO", "640만 18만 신아영"
-#   두 숫자의 정확한 의미(대화수/좋아요 등)는 사이트 아이콘으로 확인 필요 → m1, m2로 중립 저장
+#   m1 = 조회수(눈 아이콘), m2 = 대화 수(말풍선 아이콘) — 2026-11-20 카드 HTML로 확인.
+#   대화 수는 메시지 건수가 아니라 대화방(이용자) 수로 추정 (상세 페이지는 로그인 필요라 미확인)
 #   주간 증분 = 지난 스냅샷과 '공통 항목'만 비교한 누적값 차이 (신규 항목 진입에 의한 점프 제거)
 # -----------------------------------------------------------------------------
 NUM_UNITS = {"만": 1e4, "万": 1e4, "萬": 1e4, "천": 1e3, "千": 1e3, "K": 1e3, "k": 1e3,
@@ -635,8 +636,11 @@ def collect_chat_stats(ctx, company, ccfg):
                 common = [i for i in cur if i in prev and cur[i][0] is not None and prev[i][0] is not None]
                 days = (ctx.today - date.fromisoformat(prev_date)).days or 7
                 d1 = sum(cur[i][0] - prev[i][0] for i in common) * 7 / days     # 주간 환산
+                common2 = [i for i in cur if i in prev and cur[i][1] is not None and prev[i][1] is not None]
+                d2 = sum(cur[i][1] - prev[i][1] for i in common2) * 7 / days
                 new = [i for i in cur if i not in prev]
-                rows += [dict(base, metric=f"{kind}_m1_delta_w", entity=s["id"], value=float(d1), unit="per week"),
+                rows += [dict(base, metric=f"{kind}_m1_delta_w", entity=s["id"], value=float(d1), unit="views/week"),
+                         dict(base, metric=f"{kind}_m2_delta_w", entity=s["id"], value=float(d2), unit="chats/week"),
                          dict(base, metric=f"{kind}_new", entity=s["id"], value=float(len(new)), unit="count")]
                 for i in new:   # 신규 작품·캐릭터 = 이벤트로 기록 (IP 태깅은 주간 LLM 작업)
                     db.insert_event(ctx.con, dict(

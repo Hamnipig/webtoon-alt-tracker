@@ -149,7 +149,7 @@ def build_company(con, cid, ccfg, cfg, as_of):
         cost_ratio[acc] = [[q, v / rev_map[q]] for q, v in zip(sub.quarter, sub.value) if rev_map.get(q)]
     chat = {}
     for s in ccfg.get("chat_sites", []):
-        for metric, label in (("content_m1_delta_w", "주간 증분"), ("content_m1_total", "누적")):
+        for metric, label in (("character_m2_delta_w", "주간 증분"), ("character_m2_total", "누적")):
             pts = series(df, "chat_stats", metric, s["id"])
             if pts:
                 chat.setdefault(label, {})[s["id"]] = pts
