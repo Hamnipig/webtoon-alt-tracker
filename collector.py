@@ -458,14 +458,14 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
 
     for (y, q), rep in sorted(by_period.items()):
         ck = f"{company}|{rep['rcept_no']}"
-        if ck in cache and cache[ck].get("region") is not None and cache[ck].get("v", 1) >= 2:
+        if ck in cache and cache[ck].get("region") is not None and cache[ck].get("v", 1) >= 3:
             continue                                # 지역 매출 파싱 실패분·구버전 파싱은 다시 시도
         z = ctx.get("https://opendart.fss.or.kr/api/document.xml",
                     params={"crtfc_key": key, "rcept_no": rep["rcept_no"]}, timeout=90)
         with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
             xml = max((zf.read(nm) for nm in zf.namelist()), key=len).decode("utf-8", "ignore")
         soup = BeautifulSoup(xml, "lxml")
-        lines, region, costs = [f"# {rep['report_nm']} ({rep['rcept_no']})", ""], None, {}
+        lines, region, costs, seg_fallback = [f"# {rep['report_nm']} ({rep['rcept_no']})", ""], None, {}, None
         for t in soup.find_all("table"):
             rows = [[c.get_text(" ", strip=True) for c in tr.find_all(["td", "th", "te", "tu"])]
                     for tr in t.find_all("tr")]
@@ -476,8 +476,11 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
             if not (hit_seg or hit_cost) or not re.search(r"\d{1,3}(,\d{3})+", txt):
                 continue
             # ① 지역 표: 헤더에 국내·해외, '당' 으로 시작하는 행 (첫 번째 = 연결)
+            # 우선순위: 주석의 명시적 지역별 매출 표(지리 기준) → 없을 때만 '사업의 내용' 부문×국내/해외 표
             if region is None:
-                region = parse_region_table(rows) or parse_segment_region(rows)
+                region = parse_region_table(rows)
+            if seg_fallback is None:
+                seg_fallback = parse_segment_region(rows)
             # ② 판관비 표 (첫 번째 = 연결): '누적' 열이 있으면 누적값, 없으면 첫 숫자(1Q·연간)
             if hit_cost and not costs and "급여" in txt:
                 has_cum = any("누적" in " ".join(r_) for r_ in rows[:3])
@@ -490,8 +493,9 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
                             costs[name] = nums[1] if (has_cum and len(nums) >= 2) else nums[0]
             lines.append(f"## {'부문/지역' if hit_seg else '비용'} 후보 표")
             lines += ["| " + " | ".join(r_) + " |" for r_ in rows[:40]] + [""]
+        region = region or seg_fallback
         (review_dir / f"{company}_{rep['rcept_no']}.md").write_text("\n".join(lines), encoding="utf-8")
-        cache[ck] = {"year": y, "q": q, "region": region, "costs": costs, "report": rep["report_nm"], "v": 2}
+        cache[ck] = {"year": y, "q": q, "region": region, "costs": costs, "report": rep["report_nm"], "v": 3}
     parsed_cache.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # 누적 → 분기 단독 변환 + 단위 판별
@@ -504,11 +508,13 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
         v, old = ytd.get((y, q)), ytd.get((y - 1, q))
         if not v or not old or v["region"].get("prev_domestic") is None:
             return False
-        for acc in ("domestic", "overseas"):
-            a, b = v["region"].get(f"prev_{acc}"), old["region"][acc]
-            if b and a is not None and abs(a / b - 1) > 0.03:
-                return True
-        return False
+        pd_, po = v["region"].get("prev_domestic"), v["region"].get("prev_overseas")
+        od, oo = old["region"]["domestic"], old["region"]["overseas"]
+        if pd_ is None or po is None or not (od + oo):
+            return False
+        same_total = abs((pd_ + po) / (od + oo) - 1) < 0.03      # 합계는 같고
+        moved = od and abs(pd_ / od - 1) > 0.10                    # 국내/해외 구성만 10% 넘게 바뀜 = 재분류
+        return bool(same_total and moved)
 
     out = []
     for (y, q), v in sorted(ytd.items()):
@@ -531,12 +537,20 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
             val = (v["region"][acc] - (prev["region"][acc] if prev else 0)) * unit
             out.append(dict(company=company, stock_code=stock_code, quarter=f"{y}Q{q}", account=acc,
                             scope="REGION", value=val, basis=basis))
+        # 비용표 단위는 매출 표와 다를 수 있음 → 누적 매출 대비 비율이 0.1%~150%가 되는 단위 선택
+        cost_unit = unit
+        if v["costs"] and cum_rev:
+            ref = max(v["costs"].values())
+            ok = [u for u in (1000, 1, 1_000_000) if 0.001 <= ref * u / cum_rev <= 1.5]
+            cost_unit = ok[0] if ok else None
         for acc, cum in v["costs"].items():
+            if cost_unit is None:
+                break
             if q > 1 and acc not in (prev or {}).get("costs", {}):
                 continue                            # 직전 누적이 없으면 누적값이 그대로 들어가므로 제외
             pc = prev["costs"][acc] if q > 1 else 0
             out.append(dict(company=company, stock_code=stock_code, quarter=f"{y}Q{q}", account=acc,
-                            scope="COST", value=(cum - pc) * unit, basis="parsed(YTD diff)"))
+                            scope="COST", value=(cum - pc) * cost_unit, basis="parsed(YTD diff)"))
     # 이전 실행에서 잘못 들어간 비용 행 정리 후 저장
     ctx.con.execute("DELETE FROM financials WHERE company=? AND scope='COST'", (company,))
     return db.upsert_financials(ctx.con, out) if out else 0
