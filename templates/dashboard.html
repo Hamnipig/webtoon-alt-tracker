@@ -167,6 +167,15 @@ function render(co) {
       <div class="note">4분기 = 사업보고서 연간 − 3분기 누적. 마지막 막대(연한 색)는 추정치입니다.</div></div>
     <div class="card c4"><h2>영업이익률</h2><div class="chartbox" id="ch-opm"></div></div>
 
+    <div class="card c6"><h2>국내/해외 분기 매출 (DART 주석, 누적 차감)</h2><div class="chartbox" id="ch-region"></div>
+      <div class="note">국내·해외 매출은 연결 주석 '지역별 매출'의 연초 누적값에서 직전 보고서 누적을 빼 분기 단독으로 만든 값입니다.</div></div>
+    <div class="card c6"><h2>비용 / 매출 (지급수수료 · 광고선전비)</h2><div class="chartbox" id="ch-cost"></div>
+      <div class="note">지급수수료에는 플랫폼·결제 수수료, 외부 IP 로열티, AI 추론 비용이 섞여 있을 수 있습니다. 탑툰챗 IP 믹스와 함께 보세요.</div></div>
+
+    <div class="card c12"><h2>탑툰챗 국가별 활동량 (작품 카드 1번째 수치의 주간 증분)</h2><div class="chartbox" id="ch-chat"></div>
+      <div class="note">지난주와 이번 주에 모두 노출된 작품만 비교해서 신규 작품 진입 효과를 뺐습니다. 수치는 '25만' 같은 반올림 표기라 작은 증분은 0으로 보일 수 있습니다.
+      두 번째 주부터 값이 생깁니다.</div></div>
+
     <div class="card c6"><h2>백테스트 (분기 종료 시점 신호 vs 실제 매출 QoQ)</h2>
       <table><tr><th>분기</th><th>모델</th><th class="n">신호</th><th class="n">실제</th><th>방향</th></tr>
       ${(nc.backtest||[]).slice().reverse().map(r => `<tr><td>${r.quarter}</td><td class="meta">${r.model === 'total' ? '합산' : '해외 대리('+r.regime+')'}</td>
@@ -175,6 +184,7 @@ function render(co) {
       </table>
       <div class="note">합산 모델(${nc.dom_backtest_start}~): 적중 ${fmtHit(nc.backtest_stats.total_post_merger)} ·
         해외 대리(유통 중심기): ${fmtHit(nc.backtest_stats.overseas_proxy_pre_regime)} · 해외 대리(플랫폼 전환 후): ${fmtHit(nc.backtest_stats.overseas_proxy_post_regime)}<br>
+        국내 신호 vs 국내 매출: ${fmtHit(nc.backtest_stats.domestic_region)} · 해외 신호 vs 해외 매출: ${fmtHit(nc.backtest_stats.overseas_region)}<br>
         LOO 평균오차(QoQ) ${pct(nc.backtest_stats.loo_mae_qoq)} · 표본이 작아 적중률은 검증이 아니라 모니터링 지표입니다.</div></div>
 
     <div class="card c6"><h2>탑툰챗 IP 출처 비중 (OPM 방향성 경고등)</h2><div class="chartbox" id="ch-ip"></div>
@@ -230,6 +240,15 @@ function render(co) {
            [{label: '매출(억원)', data: revData, backgroundColor: colors}], {fmt: v => Number(v).toFixed(0)});
   const opm = Object.entries(nc.opm || {}).slice(-12);
   lineChart(document.getElementById('ch-opm'), {'OPM': opm}, {fmt: v => (v*100).toFixed(0)+'%'});
+
+  const rq = [...new Set([...(co.region.domestic||[]), ...(co.region.overseas||[])].map(p => p[0]))].sort().slice(-12);
+  const rm = k => new Map(co.region[k] || []);
+  barChart(document.getElementById('ch-region'), rq, [
+    {label: '국내(억원)', data: rq.map(q => rm('domestic').has(q) ? rm('domestic').get(q) / 1e8 : null)},
+    {label: '해외(억원)', data: rq.map(q => rm('overseas').has(q) ? rm('overseas').get(q) / 1e8 : null)},
+  ], {fmt: v => Number(v).toFixed(0)});
+  lineChart(document.getElementById('ch-cost'), co.cost_ratio || {}, {fmt: v => (v*100).toFixed(0)+'%'});
+  lineChart(document.getElementById('ch-chat'), (co.chat || {})['주간 증분'] || {}, {fmt: v => v >= 1e4 ? (v/1e4).toFixed(1)+'만' : Number(v).toFixed(0)});
 
   const ip = co.ip_mix, ipKeys = Object.keys(ip);
   if (ipKeys.length) {

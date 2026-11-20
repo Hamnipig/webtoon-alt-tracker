@@ -148,12 +148,15 @@ def mean_valid(vals):
 # -----------------------------------------------------------------------------
 # 신호 구성
 # -----------------------------------------------------------------------------
-def _sum_series(series_list):
-    """같은 단위 시계열 합산 (모든 구성요소가 값이 있는 시점만)."""
+def _sum_series(series_list, fill_zero=False):
+    """같은 단위 시계열 합산.
+    fill_zero=True: 네이버 데이터랩은 검색이 없는 주를 응답에서 빼므로 결측=0으로 보고 합산
+    fill_zero=False: 수동 입력 등은 모든 구성요소가 있는 시점만 합산"""
     s = [x for x in series_list if not x.empty]
     if not s:
         return pd.Series(dtype=float)
-    return pd.concat(s, axis=1).dropna().sum(axis=1)
+    df = pd.concat(s, axis=1)
+    return (df.fillna(0) if fill_zero else df.dropna()).sum(axis=1)
 
 
 def _region_visits(df, d, region):
@@ -174,12 +177,16 @@ def domestic_signal(df, ccfg, q, as_of):
     같은 요청에서 받아 스케일이 같은 네이버 지수는 '합산 후' 성장률을 구한다."""
     parts = {}
     groups = ccfg.get("naver_datalab", {}).get("groups", [])
-    naver = _sum_series([weekly(df, "naver_datalab", g["name"], "KR") for g in groups])
+    naver = _sum_series([weekly(df, "naver_datalab", g["name"], "KR") for g in groups], fill_zero=True)
     parts["naver:자사합계"], _ = qtd_growth_weekly(naver, q, as_of)
     for g in groups:   # 참고용 (신호 계산에는 미사용)
         parts[f"(참고)naver:{g['name']}"], _ = qtd_growth_weekly(weekly(df, "naver_datalab", g["name"], "KR"), q, as_of)
     doms = [d for d in ccfg.get("domains", []) if d["region"] in ("domestic", "split")]
     parts["sw:국내방문합계"], _ = qtd_growth_monthly(_sum_series([_region_visits(df, d, "domestic") for d in doms]), q, as_of)
+    # 탑툰챗 국내 사이트 주간 활동량(작품 카드 누적수치 증분) — 이력이 한 분기 이상 쌓이면 자동 반영
+    for s in [x for x in ccfg.get("chat_sites", []) if x["region"] == "domestic"]:
+        parts[f"chat:{s['id']}"], _ = qtd_growth_weekly(
+            weekly(df, "chat_stats", s["id"], metric="content_m1_delta_w"), q, as_of)
     core = [v for k, v in parts.items() if not k.startswith("(참고)")]
     return mean_valid(core), parts
 
@@ -201,7 +208,19 @@ def overseas_signal(df, ccfg, q, as_of):
         weights[f"sw:{d['domain']}"] = float(v[(v.index >= ps) & (v.index < qs)].sum())
     if parts and sum(weights.values()) > 0:
         tw = sum(weights.values())
-        return float(sum(parts[k] * weights[k] / tw for k in parts)), parts, fx_parts
+        g_sw = float(sum(parts[k] * weights[k] / tw for k in parts))
+    else:
+        g_sw = None
+    # 탑툰챗 해외 사이트 활동량 × 환율 (사이트 간 단순 평균)
+    chat = {}
+    for s in [x for x in ccfg.get("chat_sites", []) if x["region"] == "overseas"]:
+        g, _ = qtd_growth_weekly(weekly(df, "chat_stats", s["id"], metric="content_m1_delta_w"), q, as_of)
+        if g is not None:
+            fx = fx_qoq(df, s["fx"], q, as_of) if s.get("fx") else 0.0
+            chat[f"chat:{s['id']}"] = (1 + g) * (1 + (fx or 0)) - 1
+    parts.update(chat)
+    if g_sw is not None or chat:
+        return mean_valid([g_sw, mean_valid(chat.values())]), parts, fx_parts
     if not parts:   # Similarweb 이력이 없으면 Google Trends(JP·TW)로 대체
         gt = ccfg.get("google_trends") or {}
         fx_jp = fx_qoq(df, "JPYKRW", q, as_of) or 0.0
@@ -283,6 +302,23 @@ def run(con, company, ccfg, cfg, as_of: date | None = None):
                        regime="post" if q_ge(q, regime) else "pre"))
     bt = pd.DataFrame(bt)
 
+    # 지역별 백테스트 (DART 주석의 국내/해외 매출이 있을 때)
+    reg = fin[fin.scope == "REGION"].pivot_table(index="quarter", columns="account", values="value")
+    rbt = []
+    for q in reg.index:
+        pq = q_shift(q, -1)
+        if pq not in reg.index or q == first_full:
+            continue
+        q_end = q_start(q_shift(q, 1)) + timedelta(days=6)
+        gd, go, *_ = signals_for(q, q_end)
+        rec = dict(quarter=q)
+        if "domestic" in reg and q_ge(q, dom_start) and reg.loc[pq, "domestic"]:
+            rec.update(dom_actual=float(reg.loc[q, "domestic"] / reg.loc[pq, "domestic"] - 1), g_dom=gd)
+        if "overseas" in reg and reg.loc[pq, "overseas"]:
+            rec.update(ovs_actual=float(reg.loc[q, "overseas"] / reg.loc[pq, "overseas"] - 1), g_ovs=go)
+        rbt.append(rec)
+    rbt = pd.DataFrame(rbt)
+
     def hit_stats(sub):
         sub = sub.dropna(subset=["g_signal"])
         if sub.empty:
@@ -311,6 +347,12 @@ def run(con, company, ccfg, cfg, as_of: date | None = None):
         "overseas_proxy_post_regime": hit_stats(bt[(bt.model == "overseas_proxy") & (bt.regime == "post")]) if not bt.empty else dict(n=0, hit_ratio=None),
         "loo_mae_qoq": float(np.mean(loo)) if loo else None,
     }
+    for key, gcol, acol in (("domestic_region", "g_dom", "dom_actual"), ("overseas_region", "g_ovs", "ovs_actual")):
+        if not rbt.empty and acol in rbt:
+            sub = rbt.dropna(subset=[acol]).rename(columns={gcol: "g_signal", acol: "actual_qoq"})
+            stats[key] = hit_stats(sub[["g_signal", "actual_qoq"]].dropna(subset=["actual_qoq"]))
+        else:
+            stats[key] = dict(n=0, hit_ratio=None)
 
     # --- 현재 분기 나우캐스트
     cur_q = q_of(as_of)
@@ -359,5 +401,6 @@ def run(con, company, ccfg, cfg, as_of: date | None = None):
         seasonal_factors=sf, backtest=bt.to_dict("records") if not bt.empty else [], backtest_stats=stats,
         event_elasticity=elasticity, wow=wow,
         opm={q: float(op[q] / rev[q]) for q in rev.index if q in op.index and rev[q]},
+        region_backtest=rbt.to_dict("records") if not rbt.empty else [],
         dom_backtest_start=dom_start,
     )

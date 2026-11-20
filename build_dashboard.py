@@ -138,6 +138,21 @@ def build_company(con, cid, ccfg, cfg, as_of):
                 row["basis"] = v.basis.iloc[0]
         fin_tbl.append(row)
     seg_tbl = fin[fin.scope != "CFS"].sort_values(["quarter", "scope", "account"]).to_dict("records")
+    rev_map = {r["quarter"]: r.get("revenue") for r in fin_tbl}
+    region = {}
+    for acc in ("domestic", "overseas"):
+        sub = fin[(fin.scope == "REGION") & (fin.account == acc)].sort_values("quarter")
+        region[acc] = [[q, v] for q, v in zip(sub.quarter, sub.value)]
+    cost_ratio = {}
+    for acc in sorted(set(fin[fin.scope == "COST"].account)):
+        sub = fin[(fin.scope == "COST") & (fin.account == acc)].sort_values("quarter")
+        cost_ratio[acc] = [[q, v / rev_map[q]] for q, v in zip(sub.quarter, sub.value) if rev_map.get(q)]
+    chat = {}
+    for s in ccfg.get("chat_sites", []):
+        for metric, label in (("content_m1_delta_w", "주간 증분"), ("content_m1_total", "누적")):
+            pts = series(df, "chat_stats", metric, s["id"])
+            if pts:
+                chat.setdefault(label, {})[s["id"]] = pts
 
     ev = pd.read_sql_query("SELECT * FROM events WHERE company=? ORDER BY detected_on DESC LIMIT 60",
                            con, params=(cid,))
@@ -158,7 +173,7 @@ def build_company(con, cid, ccfg, cfg, as_of):
                 nowcast=nc, status=status, auto_summary=auto_summary(nc, status),
                 commentary=commentary, naver=naver, own_groups=own_groups, gtrends=gtrends,
                 similarweb=sw, fx=fx, tranco=tranco, ip_mix=ip_mix, financials=fin_tbl,
-                segments=seg_tbl, events=events,
+                segments=seg_tbl, events=events, region=region, cost_ratio=cost_ratio, chat=chat,
                 domains=[d["domain"] for d in ccfg.get("domains", [])])
 
 

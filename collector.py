@@ -337,48 +337,103 @@ def collect_dart_fin(ctx, company, stock_code, start_year=2022):
 
 
 def collect_dart_docs(ctx, company, stock_code, ccfg):
-    """정기보고서 원문에서 부문·지역·비용 관련 표를 찾아 '검토용' 파일로 저장.
-    표의 열 구조(당분기/누적/전기)가 보고서마다 달라 자동으로 숫자를 넣지 않는다.
-    확인된 값은 data/manual/segments.csv에 입력 → ingest_manual()이 DB에 반영."""
+    """정기보고서 원문 주석에서 ① 국내/해외 매출(연결, 누적) ② 판관비 중 지급수수료·광고선전비(연결, 누적)를
+    자동 파싱해 '분기 단독'값으로 변환·저장한다. 후보 표 전체는 data/review/*.md 로도 남겨 사람이 검증할 수 있게 한다.
+
+    검증된 구조 (엔키AX 2026 반기·3분기 보고서):
+      - '구분 | 국내 | 해외 | 합계' 표의 '당분기/당반기/당기' 행 = 연초부터 누적, 첫 번째 표 = 연결, 두 번째 = 별도
+      - 판관비 표 '3개월 | 누적' 열 구조, 첫 번째 표 = 연결
+      - 단위는 보고서마다 다를 수 있어 DART 누적 매출과 비교해 원/천원을 자동 판별한다."""
     key = os.getenv("DART_API_KEY")
     if not key:
         raise ConfigRequired("DART_API_KEY 환경변수 없음")
     from bs4 import BeautifulSoup
     corp = dart_corp_code(ctx, stock_code)
-    r = ctx.get("https://opendart.fss.or.kr/api/list.json",
-                params={"crtfc_key": key, "corp_code": corp, "pblntf_ty": "A",
-                        "bgn_de": (ctx.today - timedelta(days=400)).strftime("%Y%m%d"), "page_count": 100})
-    reports = [x for x in r.json().get("list", []) if re.search("분기보고서|반기보고서|사업보고서", x["report_nm"])]
-    if not reports:
-        return 0
+    reports = []
+    for page in (1, 2):
+        r = ctx.get("https://opendart.fss.or.kr/api/list.json",
+                    params={"crtfc_key": key, "corp_code": corp, "pblntf_ty": "A", "page_no": page,
+                            "bgn_de": ctx.cfg.get("backfill_start", "2022-01-01").replace("-", ""), "page_count": 100})
+        reports += [x for x in r.json().get("list", []) if re.search("분기보고서|반기보고서|사업보고서", x["report_nm"])]
+    # 같은 기간의 정정보고서가 있으면 최신 접수분만
+    by_period = {}
+    for rep in sorted(reports, key=lambda x: x["rcept_no"]):
+        m = re.search(r"\((\d{4})\.(\d{2})\)", rep["report_nm"])
+        if m:
+            by_period[(int(m.group(1)), int(m.group(2)) // 3)] = rep
     review_dir = ROOT / "data" / "review"; review_dir.mkdir(parents=True, exist_ok=True)
     kw = ccfg.get("dart", {})
     seg_kw, cost_kw = kw.get("segment_keywords", []), kw.get("cost_keywords", [])
-    n = 0
-    for rep in reports[:2]:                         # 최근 2건만 (주간 실행이라 충분)
-        out_md = review_dir / f"{company}_{rep['rcept_no']}.md"
-        if out_md.exists():
+    parsed_cache = ROOT / "data" / "dart_parsed.json"
+    cache = json.loads(parsed_cache.read_text(encoding="utf-8")) if parsed_cache.exists() else {}
+
+    for (y, q), rep in sorted(by_period.items()):
+        ck = f"{company}|{rep['rcept_no']}"
+        if ck in cache:
             continue
         z = ctx.get("https://opendart.fss.or.kr/api/document.xml",
                     params={"crtfc_key": key, "rcept_no": rep["rcept_no"]}, timeout=90)
         with zipfile.ZipFile(io.BytesIO(z.content)) as zf:
             xml = max((zf.read(nm) for nm in zf.namelist()), key=len).decode("utf-8", "ignore")
         soup = BeautifulSoup(xml, "lxml")
-        lines = [f"# {rep['report_nm']} ({rep['rcept_no']})", ""]
+        lines, region, costs = [f"# {rep['report_nm']} ({rep['rcept_no']})", ""], None, {}
         for t in soup.find_all("table"):
-            txt = t.get_text(" ", strip=True)
+            rows = [[c.get_text(" ", strip=True) for c in tr.find_all(["td", "th", "te", "tu"])]
+                    for tr in t.find_all("tr")]
+            rows = [r_ for r_ in rows if r_]
+            txt = " ".join(" ".join(r_) for r_ in rows)
             hit_seg = sum(k in txt for k in seg_kw) >= 2
             hit_cost = any(k in txt for k in cost_kw)
             if not (hit_seg or hit_cost) or not re.search(r"\d{1,3}(,\d{3})+", txt):
                 continue
+            # ① 지역 표: 헤더에 국내·해외, '당' 으로 시작하는 행 (첫 번째 = 연결)
+            if region is None and rows and "국내" in " ".join(rows[0]) and "해외" in " ".join(rows[0]):
+                for r_ in rows[1:]:
+                    if re.match(r"^당(분기|반기|기)", r_[0].replace(" ", "")) and len(r_) >= 3:
+                        dom, ovs = _num(r_[1]), _num(r_[2])
+                        if dom is not None and ovs is not None:
+                            region = {"domestic": dom, "overseas": ovs}
+                        break
+            # ② 판관비 표 (첫 번째 = 연결): '누적' 열이 있으면 누적값, 없으면 첫 숫자(1Q·연간)
+            if hit_cost and not costs and "급여" in txt:
+                has_cum = any("누적" in " ".join(r_) for r_ in rows[:3])
+                for r_ in rows:
+                    name = r_[0].replace(" ", "")
+                    if name in cost_kw:
+                        nums = [_num(c) for c in r_[1:]]
+                        nums = [v for v in nums if v is not None]
+                        if nums:
+                            costs[name] = nums[1] if (has_cum and len(nums) >= 2) else nums[0]
             lines.append(f"## {'부문/지역' if hit_seg else '비용'} 후보 표")
-            for tr in t.find_all("tr")[:40]:
-                cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th", "te", "tu"])]
-                if cells:
-                    lines.append("| " + " | ".join(cells) + " |")
-            lines.append(""); n += 1
-        out_md.write_text("\n".join(lines), encoding="utf-8")
-    return n
+            lines += ["| " + " | ".join(r_) + " |" for r_ in rows[:40]] + [""]
+        (review_dir / f"{company}_{rep['rcept_no']}.md").write_text("\n".join(lines), encoding="utf-8")
+        cache[ck] = {"year": y, "q": q, "region": region, "costs": costs, "report": rep["report_nm"]}
+    parsed_cache.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # 누적 → 분기 단독 변환 + 단위 판별
+    rev_q = dict(ctx.con.execute("SELECT quarter, value FROM financials WHERE company=? AND scope='CFS' "
+                                 "AND account='revenue'", (company,)).fetchall())
+    ytd = {(v["year"], v["q"]): v for k, v in cache.items()
+           if k.startswith(company + "|") and v.get("region") is not None}
+    out = []
+    for (y, q), v in sorted(ytd.items()):
+        prev = ytd.get((y, q - 1)) if q > 1 else None
+        if q > 1 and prev is None:
+            continue                                # 직전 누적이 없으면 단독값 산출 불가
+        cum_rev = sum(rev_q.get(f"{y}Q{k}", 0) for k in range(1, q + 1))
+        raw_sum = v["region"]["domestic"] + v["region"]["overseas"]
+        unit = min((1, 1000), key=lambda u: abs(raw_sum * u - cum_rev)) if cum_rev else 1000
+        check = abs(raw_sum * unit / cum_rev - 1) if cum_rev else None
+        for acc in ("domestic", "overseas"):
+            val = (v["region"][acc] - (prev["region"][acc] if prev else 0)) * unit
+            out.append(dict(company=company, stock_code=stock_code, quarter=f"{y}Q{q}", account=acc,
+                            scope="REGION", value=val,
+                            basis=f"parsed(YTD diff, 매출합 오차 {check:.1%})" if check is not None else "parsed"))
+        for acc, cum in v["costs"].items():
+            pc = (prev or {}).get("costs", {}).get(acc, 0) if q > 1 else 0
+            out.append(dict(company=company, stock_code=stock_code, quarter=f"{y}Q{q}", account=acc,
+                            scope="COST", value=(cum - pc) * unit, basis="parsed(YTD diff)"))
+    return db.upsert_financials(ctx.con, out) if out else 0
 
 
 # -----------------------------------------------------------------------------
@@ -502,6 +557,104 @@ def collect_catalog(ctx, company, ccfg):
 
 
 # -----------------------------------------------------------------------------
+# 7-b) 탑툰챗 공개 지표 (국가별 사이트, 작품·캐릭터 카드의 누적 수치)
+#   카드 텍스트 예: "MULTI VOICE 23만 1.4만 여사친은 SOLO", "640만 18만 신아영"
+#   두 숫자의 정확한 의미(대화수/좋아요 등)는 사이트 아이콘으로 확인 필요 → m1, m2로 중립 저장
+#   주간 증분 = 지난 스냅샷과 '공통 항목'만 비교한 누적값 차이 (신규 항목 진입에 의한 점프 제거)
+# -----------------------------------------------------------------------------
+NUM_UNITS = {"만": 1e4, "万": 1e4, "萬": 1e4, "천": 1e3, "千": 1e3, "K": 1e3, "k": 1e3,
+             "M": 1e6, "억": 1e8, "億": 1e8, "B": 1e9}
+NUM_RE = re.compile(r"^(\d+(?:[.,]\d+)?)(만|万|萬|천|千|K|k|M|억|億|B)?$")
+
+
+def parse_card(text):
+    flags, nums, rest = [], [], []
+    for tok in text.split():
+        m = NUM_RE.match(tok)
+        if m and not rest and len(nums) < 2:
+            nums.append(float(m.group(1).replace(",", "")) * NUM_UNITS.get(m.group(2), 1))
+        elif tok.isupper() and tok.isascii() and not nums and not rest:
+            flags.append(tok)
+        else:
+            rest.append(tok)
+    return flags, nums, " ".join(rest)
+
+
+def collect_chat_stats(ctx, company, ccfg):
+    from bs4 import BeautifulSoup
+    sites = ccfg.get("chat_sites", [])
+    if not sites:
+        raise ConfigRequired("chat_sites 비어 있음")
+    ctx.con.execute("""CREATE TABLE IF NOT EXISTS chat_items (
+        company TEXT, site TEXT, kind TEXT, item_id TEXT, snapshot_date TEXT, title TEXT,
+        m1 REAL, m2 REAL, flags TEXT, PRIMARY KEY (company, site, kind, item_id, snapshot_date))""")
+    wk, snap = week_start(ctx.today), ctx.today.isoformat()
+    total_rows, fails = 0, []
+    for s in sites:
+        items = {}
+        for path in s.get("paths", ["/", "/contents", "/ranking"]):
+            try:
+                r = ctx.get(urljoin(s["url"], path))
+                if r.status_code != 200:
+                    fails.append(f"{s['id']}{path}:HTTP{r.status_code}"); continue
+                for a in BeautifulSoup(r.text, "lxml").find_all("a", href=True):
+                    m = re.search(r"/detail/(content|character)/(\d+)", a["href"])
+                    if not m:
+                        continue
+                    flags, nums, title = parse_card(re.sub(r"\s+", " ", a.get_text(" ", strip=True)))
+                    key = (m.group(1), m.group(2))
+                    old = items.get(key)
+                    if old is None or (nums and not old[1]):
+                        items[key] = (flags, nums, title)
+            except Exception as e:  # noqa: BLE001
+                fails.append(f"{s['id']}{path}:{type(e).__name__}")
+        if not items:
+            continue
+        for (kind, iid), (flags, nums, title) in items.items():
+            ctx.con.execute("INSERT OR REPLACE INTO chat_items VALUES (?,?,?,?,?,?,?,?,?)",
+                            (company, s["id"], kind, iid, snap, title, nums[0] if nums else None,
+                             nums[1] if len(nums) > 1 else None, ",".join(flags)))
+        ctx.con.commit()
+        prev_date = ctx.con.execute("SELECT MAX(snapshot_date) FROM chat_items WHERE company=? AND site=? "
+                                    "AND snapshot_date < ?", (company, s["id"], snap)).fetchone()[0]
+        rows = []
+        for kind in ("content", "character"):
+            cur = {r_[0]: r_[1:] for r_ in ctx.con.execute(
+                "SELECT item_id, m1, m2 FROM chat_items WHERE company=? AND site=? AND kind=? AND snapshot_date=?",
+                (company, s["id"], kind, snap))}
+            base = dict(company=company, source="chat_stats", geo=s["region"], period_type="W", period=wk)
+            rows += [dict(base, metric=f"{kind}_count", entity=s["id"], value=float(len(cur)), unit="count"),
+                     dict(base, metric=f"{kind}_m1_total", entity=s["id"],
+                          value=float(sum(v[0] or 0 for v in cur.values())), unit="cum"),
+                     dict(base, metric=f"{kind}_m2_total", entity=s["id"],
+                          value=float(sum(v[1] or 0 for v in cur.values())), unit="cum")]
+            if prev_date:
+                prev = {r_[0]: r_[1:] for r_ in ctx.con.execute(
+                    "SELECT item_id, m1, m2 FROM chat_items WHERE company=? AND site=? AND kind=? AND snapshot_date=?",
+                    (company, s["id"], kind, prev_date))}
+                common = [i for i in cur if i in prev and cur[i][0] is not None and prev[i][0] is not None]
+                days = (ctx.today - date.fromisoformat(prev_date)).days or 7
+                d1 = sum(cur[i][0] - prev[i][0] for i in common) * 7 / days     # 주간 환산
+                new = [i for i in cur if i not in prev]
+                rows += [dict(base, metric=f"{kind}_m1_delta_w", entity=s["id"], value=float(d1), unit="per week"),
+                         dict(base, metric=f"{kind}_new", entity=s["id"], value=float(len(new)), unit="count")]
+                for i in new:   # 신규 작품·캐릭터 = 이벤트로 기록 (IP 태깅은 주간 LLM 작업)
+                    db.insert_event(ctx.con, dict(
+                        event_id=hashlib.sha1(f"{company}|{s['id']}|{kind}|{i}".encode()).hexdigest()[:16],
+                        company=company, detected_on=snap, page_id=f"chat:{s['id']}", region=s["region"],
+                        title=f"[{kind}] " + (ctx.con.execute(
+                            "SELECT title FROM chat_items WHERE company=? AND site=? AND kind=? AND item_id=? "
+                            "AND snapshot_date=?", (company, s["id"], kind, i, snap)).fetchone()[0] or i),
+                        url=urljoin(s["url"], f"/detail/{kind}/{i}"), tags=["chat", "new_title"]))
+        total_rows += db.upsert_metrics(ctx.con, rows)
+    if fails:
+        db.log_run(ctx.con, company, "chat_stats_issues", "FAILED", 0, "; ".join(fails)[:500])
+    if total_rows == 0:
+        raise RuntimeError("; ".join(fails) or "카드 0개")
+    return total_rows
+
+
+# -----------------------------------------------------------------------------
 # 8) 수동 입력 병합 (Similarweb 월간, DART 부문/지역 확인값)
 # -----------------------------------------------------------------------------
 def ingest_manual(ctx, company, ccfg):
@@ -550,7 +703,7 @@ def ingest_manual(ctx, company, ccfg):
 # -----------------------------------------------------------------------------
 # 실행
 # -----------------------------------------------------------------------------
-SOURCES = ["manual", "naver", "gtrends", "fx", "tranco", "dart", "dart_docs", "pages", "catalog", "peers"]
+SOURCES = ["manual", "naver", "gtrends", "fx", "tranco", "dart", "dart_docs", "pages", "catalog", "chat", "peers"]
 
 
 def main():
@@ -575,7 +728,9 @@ def main():
         if "dart" in only:      run_source(ctx, cid, "dart_financials", collect_dart_fin, c["stock_code"])
         if "dart_docs" in only: run_source(ctx, cid, "dart_documents", collect_dart_docs, c["stock_code"], c)
         if "pages" in only:     run_source(ctx, cid, "page_watch", collect_pages, c)
-        if "catalog" in only:   run_source(ctx, cid, "chat_catalog", collect_catalog, c)
+        if "catalog" in only and (c.get("chat_catalog") or {}).get("item_selector"):
+            run_source(ctx, cid, "chat_catalog", collect_catalog, c)
+        if "chat" in only:      run_source(ctx, cid, "chat_stats", collect_chat_stats, c)
 
     if "peers" in only:
         print("== 동종사")
