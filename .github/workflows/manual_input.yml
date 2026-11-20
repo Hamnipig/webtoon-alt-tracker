@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: {ref: main}          # 트리거 시점 SHA가 아니라 최신 main (앞선 실행의 데이터 커밋 반영)
       - uses: actions/setup-python@v5
         with: {python-version: "3.11", cache: pip}
       - run: pip install -r requirements.txt
@@ -41,7 +42,7 @@ jobs:
           git config user.email "tracker-bot@users.noreply.github.com"
           git add data docs
           git diff --cached --quiet || git commit -m "manual: similarweb input #${{ github.event.issue.number }} [skip ci]"
-          git push
+          for i in 1 2 3; do git pull --rebase -X theirs origin main && git push && break; sleep 5; done
           gh issue close ${{ github.event.issue.number }} --comment "반영 완료: ${{ steps.parse.outputs.msg }}"
       - name: Report error
         if: failure()
