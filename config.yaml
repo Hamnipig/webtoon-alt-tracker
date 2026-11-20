@@ -56,7 +56,9 @@ companies:
 
     # 도메인 → 국내/해외 매핑. Similarweb 수동입력·Tranco 순위에 사용
     domains:
-      - {domain: "toptoon.com",       region: "domestic"}
+      # Similarweb 무료판은 하위 도메인을 루트에 합산 → toptoon.com 에 chat.toptoon.com·chat.global.toptoon.com 포함
+      #   그래서 한국 비중(kr_share)으로 국내/해외를 나눈다
+      - {domain: "toptoon.com",       region: "split"}
       - {domain: "chat.toptoon.com",  region: "domestic"}  # 탑툰챗은 국가별 별도 도메인 운영 (2026-11 확인)
       - {domain: "toptoon.jp",        region: "overseas", fx: "JPYKRW"}
       - {domain: "chat.toptoon.jp",   region: "overseas", fx: "JPYKRW"}
