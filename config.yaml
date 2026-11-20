@@ -102,21 +102,48 @@ companies:
   kidari:
     name: "키다리스튜디오"
     stock_code: "020120"
-    enabled: false               # TODO: 플랫폼/도메인 구성 확인 후 활성화
-    structural_breaks: {domestic_first_full_quarter: "2023Q1", overseas_regime_change: "2023Q1"}
-    default_overseas_share: 0.5
+    enabled: true
+    # 레진엔터테인먼트는 2021-02 편입 → 백필 구간(2022~)에는 구조 단절 없음
+    structural_breaks: {domestic_first_full_quarter: "2022Q1", overseas_regime_change: "2022Q1"}
+    default_overseas_share: 0.5     # DART 지역 매출 파싱 전 임시값 (파싱되면 자동 교체)
+
     naver_datalab:
       groups:
-        - {name: "봄툰", keywords: ["봄툰"]}
-        - {name: "레진코믹스", keywords: ["레진코믹스", "레진"]}
-    google_trends: {keywords: ["lezhin"], geos: ["US", "JP", "FR"]}
-    fx_pairs: ["USDKRW", "EURKRW", "JPYKRW"]
+        - {name: "봄툰", keywords: ["봄툰", "bomtoon"]}
+        - {name: "레진코믹스", keywords: ["레진코믹스", "레진", "lezhin"]}
+        - {name: "티즈", keywords: ["레진 티즈", "티즈 캐릭터챗", "myteaz"]}
+      peer_groups:
+        - {name: "탑툰", keywords: ["탑툰", "toptoon"]}
+
+    google_trends:
+      keywords: ["lezhin", "bomtoon", "beltoon", "ベルトゥーン"]
+      geos: ["US", "TW", "JP", "FR"]
+
+    fx_pairs: ["USDKRW", "JPYKRW", "TWDKRW", "EURKRW"]
+
+    # 2026-11-20 브라우저로 확인한 도메인 (델리툰은 lezhinfr.com 으로 리디렉트)
     domains:
-      - {domain: "bomtoon.com", region: "domestic"}
-      - {domain: "lezhin.com",  region: "split"}
-    page_watch: []
+      - {domain: "bomtoon.com",  region: "domestic"}
+      - {domain: "lezhin.com",   region: "split"}     # 한국어 외 언어 페이지 포함 가능 → 한국 비중 입력
+      - {domain: "myteaz.io",    region: "domestic"}  # AI 캐릭터챗 '티즈' (2026-10 출시)
+      - {domain: "lezhinus.com", region: "overseas", fx: "USDKRW"}
+      - {domain: "beltoon.jp",   region: "overseas", fx: "JPYKRW"}
+      - {domain: "bomtoon.tw",   region: "overseas", fx: "TWDKRW"}
+      - {domain: "lezhinfr.com", region: "overseas", fx: "EURKRW"}
+
+    page_watch:
+      - {id: "lezhin_home", url: "https://www.lezhin.com/ko",          region: "domestic", kind: "notice"}
+      - {id: "teaz_home",   url: "https://myteaz.io/ko",               region: "domestic", kind: "catalog"}
+
+    # 티즈: 카드 숫자(종이비행기 아이콘) = 보낸 메시지 수로 추정. JS 렌더링 페이지라 render: true
+    chat_sites:
+      - {id: "teaz", url: "https://myteaz.io/ko", region: "domestic", render: true,
+         paths: ["/ko"], link_pattern: "/chat/r/([A-Za-z0-9]+)", signal_metric: "m1"}
+
     chat_catalog: {url: "", item_selector: ""}
-    dart: {segment_keywords: ["국내", "해외", "지역"], cost_keywords: ["지급수수료"]}
+    dart:
+      segment_keywords: ["국내", "해외", "미국", "북미", "일본", "대만", "유럽", "지역", "플랫폼"]
+      cost_keywords: ["지급수수료", "광고선전비", "외주비"]
 
 # 업황 체크용 동종사 (DART 분기 매출만 수집)
 peers:

@@ -6,3 +6,4 @@ beautifulsoup4>=4.12
 lxml>=5.0
 yfinance>=0.2.40
 pytrends==4.9.2   # 2025-04 아카이브. 실패해도 파이프라인은 계속됨
+playwright>=1.47   # JS 렌더링 공개 페이지(티즈) 읽기용

@@ -64,6 +64,8 @@ def weekly(df, source, entity, geo=None, metric="search_index"):
     if geo is not None:
         m &= df.geo == geo
     s = df[m].set_index("period")["value"].sort_index()
+    if s.empty:   # 데이터가 아직 없는 종목/소스 → 빈 날짜 인덱스로 반환 (비교 연산 오류 방지)
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     return s[~s.index.duplicated()]
 
 
@@ -193,7 +195,7 @@ def domestic_signal(df, ccfg, q, as_of):
     # 탑툰챗 국내 사이트 주간 활동량(작품 카드 누적수치 증분) — 이력이 한 분기 이상 쌓이면 자동 반영
     for s in [x for x in ccfg.get("chat_sites", []) if x["region"] == "domestic"]:
         parts[f"chat:{s['id']}"], _ = qtd_growth_weekly(
-            weekly(df, "chat_stats", s["id"], metric="character_m2_delta_w"), q, as_of)
+            weekly(df, "chat_stats", s["id"], metric=f"character_{s.get('signal_metric', 'm2')}_delta_w"), q, as_of)
     core = [v for k, v in parts.items() if not k.startswith("(참고)")]
     return mean_valid(core), parts
 
@@ -218,7 +220,7 @@ def overseas_signal(df, ccfg, q, as_of):
     # 탑툰챗 해외 사이트 활동량 × 환율 (사이트 간 단순 평균)
     chat = {}
     for s in [x for x in ccfg.get("chat_sites", []) if x["region"] == "overseas"]:
-        g, _ = qtd_growth_weekly(weekly(df, "chat_stats", s["id"], metric="character_m2_delta_w"), q, as_of)
+        g, _ = qtd_growth_weekly(weekly(df, "chat_stats", s["id"], metric=f"character_{s.get('signal_metric', 'm2')}_delta_w"), q, as_of)
         if g is not None:
             fx = fx_qoq(df, s["fx"], q, as_of) if s.get("fx") else 0.0
             chat[f"chat:{s['id']}"] = (1 + g) * (1 + (fx or 0)) - 1

@@ -22,6 +22,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.11", cache: pip}
       - run: pip install -r requirements.txt
+      - name: Install headless browser (JS 렌더링 페이지용)
+        if: github.event_name != 'push'
+        run: python -m playwright install --with-deps chromium
 
       - name: Collect (스케줄·수동 실행일 때만 전체 수집)
         if: github.event_name != 'push'

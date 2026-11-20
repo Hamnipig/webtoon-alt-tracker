@@ -336,6 +336,55 @@ def collect_dart_fin(ctx, company, stock_code, start_year=2022):
     return db.upsert_financials(ctx.con, out)
 
 
+DOM_KEYS = ("국내", "한국", "대한민국", "내수")
+TOTAL_KEYS = ("합계", "합 계", "합  계", "계", "총계", "소계")
+OVS_HINT = ("해외", "수출", "미국", "북미", "일본", "대만", "중국", "유럽", "프랑스", "아시아", "기타")
+
+
+def _is_cur(label):
+    return bool(re.match(r"^당(분기|반기|기)", label.replace(" ", "")))
+
+
+def parse_region_table(rows):
+    """지역별 매출 표에서 '당기(누적)' 국내·해외 값을 뽑는다. 두 방향 모두 지원.
+      가로형: 헤더 = 구분|국내|(미국|일본|...|해외)|합계,  행 = 당분기/전분기
+      세로형: 헤더 = 구분|당분기|전분기,                    행 = 국내/미국/일본/.../합계
+    해외 = (국내 아닌 지역 열/행 합). '해외' 소계와 개별 국가가 같이 있으면 '해외' 소계만 사용."""
+    if len(rows) < 2:
+        return None
+    head = [c.replace(" ", "") for c in rows[0]]
+    def split(labels, vals):
+        dom, ovs_parts, ovs_total = None, [], None
+        for lab, v in zip(labels, vals):
+            if v is None or not lab:
+                continue
+            l = lab.replace(" ", "")
+            if any(k.replace(" ", "") == l for k in TOTAL_KEYS) or l.startswith("합계"):
+                continue
+            if any(k in l for k in DOM_KEYS):
+                dom = v
+            elif l.startswith("해외") or l == "수출":
+                ovs_total = v
+            elif any(k in l for k in OVS_HINT):
+                ovs_parts.append(v)
+        ovs = ovs_total if ovs_total is not None else (sum(ovs_parts) if ovs_parts else None)
+        return {"domestic": dom, "overseas": ovs} if dom is not None and ovs is not None else None
+    # 가로형
+    if any(any(k in h for k in DOM_KEYS) for h in head) and any(any(k in h for k in OVS_HINT) for h in head):
+        for r_ in rows[1:]:
+            if r_ and _is_cur(r_[0]):
+                return split(head[1:], [_num(c) for c in r_[1:]])
+        return None
+    # 세로형
+    cur_col = next((i for i, h in enumerate(head) if _is_cur(h)), None)
+    if cur_col is not None:
+        labels = [r_[0] for r_ in rows[1:] if r_]
+        if any(any(k in l for k in DOM_KEYS) for l in labels):
+            vals = [_num(r_[cur_col]) if len(r_) > cur_col else None for r_ in rows[1:] if r_]
+            return split(labels, vals)
+    return None
+
+
 def collect_dart_docs(ctx, company, stock_code, ccfg):
     """정기보고서 원문 주석에서 ① 국내/해외 매출(연결, 누적) ② 판관비 중 지급수수료·광고선전비(연결, 누적)를
     자동 파싱해 '분기 단독'값으로 변환·저장한다. 후보 표 전체는 data/review/*.md 로도 남겨 사람이 검증할 수 있게 한다.
@@ -387,13 +436,8 @@ def collect_dart_docs(ctx, company, stock_code, ccfg):
             if not (hit_seg or hit_cost) or not re.search(r"\d{1,3}(,\d{3})+", txt):
                 continue
             # ① 지역 표: 헤더에 국내·해외, '당' 으로 시작하는 행 (첫 번째 = 연결)
-            if region is None and rows and "국내" in " ".join(rows[0]) and "해외" in " ".join(rows[0]):
-                for r_ in rows[1:]:
-                    if re.match(r"^당(분기|반기|기)", r_[0].replace(" ", "")) and len(r_) >= 3:
-                        dom, ovs = _num(r_[1]), _num(r_[2])
-                        if dom is not None and ovs is not None:
-                            region = {"domestic": dom, "overseas": ovs}
-                        break
+            if region is None:
+                region = parse_region_table(rows)
             # ② 판관비 표 (첫 번째 = 연결): '누적' 열이 있으면 누적값, 없으면 첫 숫자(1Q·연간)
             if hit_cost and not costs and "급여" in txt:
                 has_cum = any("누적" in " ".join(r_) for r_ in rows[:3])
@@ -565,7 +609,7 @@ def collect_catalog(ctx, company, ccfg):
 # -----------------------------------------------------------------------------
 NUM_UNITS = {"만": 1e4, "万": 1e4, "萬": 1e4, "천": 1e3, "千": 1e3, "K": 1e3, "k": 1e3,
              "M": 1e6, "억": 1e8, "億": 1e8, "B": 1e9}
-NUM_RE = re.compile(r"^(\d+(?:[.,]\d+)?)(만|万|萬|천|千|K|k|M|억|億|B)?$")
+NUM_RE = re.compile(r"^(\d+(?:[.,]\d+)?)(만|万|萬|천|千|K|k|M|억|億|B)?\+?$")
 
 
 def parse_card(text):
@@ -581,6 +625,29 @@ def parse_card(text):
     return flags, nums, " ".join(rest)
 
 
+_PW = {}
+
+
+def render_page(ctx, url):
+    """JS로 그려지는 공개 페이지를 헤드리스 브라우저로 렌더링해 HTML을 돌려준다 (playwright 필요).
+    사이트 내부 API는 호출하지 않고, 사람이 보는 화면과 같은 결과만 읽는다."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
+    if "browser" not in _PW:
+        _PW["pw"] = sync_playwright().start()
+        _PW["browser"] = _PW["pw"].chromium.launch()
+    time.sleep(ctx.sleep)
+    page = _PW["browser"].new_page(user_agent=UA, locale="ko-KR")
+    try:
+        page.goto(url, wait_until="networkidle", timeout=45000)
+        page.wait_for_timeout(2000)
+        return page.content()
+    finally:
+        page.close()
+
+
 def collect_chat_stats(ctx, company, ccfg):
     from bs4 import BeautifulSoup
     sites = ccfg.get("chat_sites", [])
@@ -593,17 +660,21 @@ def collect_chat_stats(ctx, company, ccfg):
     total_rows, fails = 0, []
     for s in sites:
         items = {}
+        pat = re.compile(s.get("link_pattern", r"/detail/(content|character)/(\d+)"))
         for path in s.get("paths", ["/", "/contents", "/ranking"]):
             try:
-                r = ctx.get(urljoin(s["url"], path))
-                if r.status_code != 200:
-                    fails.append(f"{s['id']}{path}:HTTP{r.status_code}"); continue
-                for a in BeautifulSoup(r.text, "lxml").find_all("a", href=True):
-                    m = re.search(r"/detail/(content|character)/(\d+)", a["href"])
+                html = render_page(ctx, urljoin(s["url"], path)) if s.get("render") else None
+                if html is None:
+                    r = ctx.get(urljoin(s["url"], path))
+                    if r.status_code != 200:
+                        fails.append(f"{s['id']}{path}:HTTP{r.status_code}"); continue
+                    html = r.text
+                for a in BeautifulSoup(html, "lxml").find_all("a", href=True):
+                    m = pat.search(a["href"])
                     if not m:
                         continue
                     flags, nums, title = parse_card(re.sub(r"\s+", " ", a.get_text(" ", strip=True)))
-                    key = (m.group(1), m.group(2))
+                    key = (m.group(1), m.group(2)) if m.lastindex and m.lastindex >= 2 else ("character", m.group(1))
                     old = items.get(key)
                     if old is None or (nums and not old[1]):
                         items[key] = (flags, nums, title)
