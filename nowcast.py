@@ -181,8 +181,15 @@ def domestic_signal(df, ccfg, q, as_of):
     parts["naver:자사합계"], _ = qtd_growth_weekly(naver, q, as_of)
     for g in groups:   # 참고용 (신호 계산에는 미사용)
         parts[f"(참고)naver:{g['name']}"], _ = qtd_growth_weekly(weekly(df, "naver_datalab", g["name"], "KR"), q, as_of)
+    # Similarweb: 루트 도메인(toptoon.com)에 하위 도메인(chat.)이 포함되는지 무료판에서 확인할 수 없으므로
+    # 방문수를 합산하지 않고 도메인별 성장률을 각각 구해 평균 → 중복 집계돼도 비중만 바뀌고 수준 왜곡은 없음
     doms = [d for d in ccfg.get("domains", []) if d["region"] in ("domestic", "split")]
-    parts["sw:국내방문합계"], _ = qtd_growth_monthly(_sum_series([_region_visits(df, d, "domestic") for d in doms]), q, as_of)
+    sw = {}
+    for d in doms:
+        g, _ = qtd_growth_monthly(_region_visits(df, d, "domestic"), q, as_of)
+        sw[d["domain"]] = g
+        parts[f"(참고)sw:{d['domain']}"] = g
+    parts["sw:국내도메인평균"] = mean_valid(sw.values())
     # 탑툰챗 국내 사이트 주간 활동량(작품 카드 누적수치 증분) — 이력이 한 분기 이상 쌓이면 자동 반영
     for s in [x for x in ccfg.get("chat_sites", []) if x["region"] == "domestic"]:
         parts[f"chat:{s['id']}"], _ = qtd_growth_weekly(
@@ -206,11 +213,8 @@ def overseas_signal(df, ccfg, q, as_of):
         fx_parts[d["domain"]] = fx
         parts[f"sw:{d['domain']}"] = (1 + g) * (1 + (fx or 0)) - 1
         weights[f"sw:{d['domain']}"] = float(v[(v.index >= ps) & (v.index < qs)].sum())
-    if parts and sum(weights.values()) > 0:
-        tw = sum(weights.values())
-        g_sw = float(sum(parts[k] * weights[k] / tw for k in parts))
-    else:
-        g_sw = None
+    # 해외도 같은 이유로 방문수 가중 대신 도메인별 단순 평균 (루트·하위 도메인 중복 가능성)
+    g_sw = mean_valid(parts.values()) if parts else None
     # 탑툰챗 해외 사이트 활동량 × 환율 (사이트 간 단순 평균)
     chat = {}
     for s in [x for x in ccfg.get("chat_sites", []) if x["region"] == "overseas"]:
