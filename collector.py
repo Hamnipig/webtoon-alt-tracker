@@ -948,12 +948,23 @@ def collect_rank_pages(ctx, company, ccfg):
     wk, snap, total, fails = week_start(ctx.today), ctx.today.isoformat(), 0, []
     for p in pages:
         try:
-            r = ctx.get(p["url"])
-            if r.status_code != 200:
-                fails.append(f"{p['id']}:HTTP{r.status_code}"); continue
-            items = _parse_rank(r.text, p["parser"], p.get("own_ip_keywords", []))
+            html, final_url = None, p["url"]
+            if p.get("render"):
+                html = render_page(ctx, p["url"])
+            if html is None:
+                r = ctx.get(p["url"])
+                if r.status_code != 200:
+                    fails.append(f"{p['id']}:HTTP{r.status_code}"); continue
+                html, final_url = r.text, r.url
+            items = _parse_rank(html, p["parser"], p.get("own_ip_keywords", []))
+            seen, uniq = set(), []                      # 같은 작품이 여러 목록에 중복 노출되는 경우 제거
+            for it in sorted(items, key=lambda x: x["rank"]):
+                if it["key"] not in seen:
+                    seen.add(it["key"]); uniq.append(it)
+            items = uniq[:p.get("max_items", 100)]
             if len(items) < 5:
-                fails.append(f"{p['id']}:항목 {len(items)}개(구조 변경 의심)"); continue
+                fails.append(f"{p['id']}:항목 {len(items)}개 (받은 페이지 {final_url}, {len(html)}자 — 해외 접속 차단·리디렉트 또는 구조 변경)")
+                continue
             for it in items:
                 ctx.con.execute("INSERT OR REPLACE INTO rank_items VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                 (company, p["id"], it["key"], snap, it["rank"], it["title"], it["views"],

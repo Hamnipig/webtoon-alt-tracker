@@ -141,9 +141,9 @@ companies:
 
     # 랭킹 페이지 기반 지표: 프로모션 강도(EVENT·할인·n화 무료 비중), 자사 IP 비중(제작사 표기)
     rank_pages:
-      - {id: "lezhin_rank100", url: "https://www.lezhin.com/ko/ranking", parser: "lezhin", region: "domestic",
+      - {id: "lezhin_rank100", url: "https://www.lezhin.com/ko/ranking", parser: "lezhin", region: "domestic", render: true,
          own_ip_keywords: ["키다리스튜디오"]}
-      - {id: "bomtoon_best20", url: "https://www.bomtoon.com/bom/comic/main", parser: "bomtoon", region: "domestic",
+      - {id: "bomtoon_best20", url: "https://www.bomtoon.com/bom/comic/main", parser: "bomtoon", region: "domestic", render: true, max_items: 20,
          own_ip_keywords: []}
 
     # 티즈: 카드 숫자(종이비행기 아이콘) = 보낸 메시지 수로 추정. JS 렌더링 페이지라 render: true
