@@ -238,6 +238,12 @@ function render(co) {
     <div class="card c6"><h2>비용 / 매출 (지급수수료 · 광고선전비)</h2><div class="chartbox" id="ch-cost"></div>
       <div class="note">지급수수료에는 플랫폼·결제 수수료, 외부 IP 로열티, AI 추론 비용이 섞여 있을 수 있습니다. 탑툰챗 IP 믹스와 함께 보세요.</div></div>
 
+    <div class="card c6"><h2>랭킹 기반 소비량 (TOP100 작품 누적 조회수의 주간 증분)</h2><div class="chartbox" id="ch-rankviews"></div>
+      <div class="note">지난주와 이번 주에 모두 TOP100에 있던 작품만 비교합니다. 조회수가 공개된 랭킹(탑툰)에서만 계산되며, 두 번째 수집부터 값이 생깁니다.</div></div>
+    <div class="card c6"><h2>프로모션 강도 · 자사 IP 비중 (랭킹 상위 작품 기준)</h2><div class="chartbox" id="ch-rankpromo"></div>
+      <div class="note">프로모션 비중 = 이벤트·할인·n화 무료 표시가 붙은 작품 비율(레진 100위, 봄툰 실시간 20위). 높을수록 매출을 앞당기지만 마진을 깎습니다.
+      자사 IP 비중 = 레진 랭킹 제작사 표기에 '키다리스튜디오'가 있는 작품 비율.</div></div>
+
     <div class="card c12"><h2>탑툰챗 국가별 주간 신규 대화 수 (캐릭터 카드 말풍선 수치 증분)</h2><div class="chartbox" id="ch-chat"></div>
       <div class="note">지난주와 이번 주에 모두 노출된 작품만 비교해서 신규 작품 진입 효과를 뺐습니다. 수치는 '25만' 같은 반올림 표기라 작은 증분은 0으로 보일 수 있습니다.
       두 번째 주부터 값이 생깁니다.</div></div>
@@ -326,6 +332,12 @@ function render(co) {
      backgroundColor: rq.map(q => susQ.has(q) ? css('--grid') : SLOT(1))},
   ], {fmt: v => Number(v).toFixed(0)});
   lineChart(document.getElementById('ch-cost'), co.cost_ratio || {}, {fmt: v => (v*100).toFixed(0)+'%'});
+  const rk = co.rank || {};
+  lineChart(document.getElementById('ch-rankviews'), rk['주간 조회수 증분'] || {}, {fmt: v => v >= 1e4 ? (v/1e4).toFixed(1)+'만' : Number(v).toFixed(0)});
+  const promo = {};
+  Object.entries(rk['프로모션 비중'] || {}).forEach(([k, v]) => promo[k + ' 프로모션'] = v);
+  Object.entries(rk['자사 IP 비중'] || {}).forEach(([k, v]) => { if (v.some(p => p[1] > 0)) promo[k + ' 자사 IP'] = v; });
+  lineChart(document.getElementById('ch-rankpromo'), promo, {fmt: v => (v*100).toFixed(0)+'%'});
   lineChart(document.getElementById('ch-chat'), (co.chat || {})['주간 증분'] || {}, {fmt: v => v >= 1e4 ? (v/1e4).toFixed(1)+'만' : Number(v).toFixed(0)});
 
   const ip = co.ip_mix, ipKeys = Object.keys(ip);

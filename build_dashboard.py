@@ -156,6 +156,13 @@ def build_company(con, cid, ccfg, cfg, as_of):
         sub = fin[(fin.scope == "COST") & (fin.account == acc)].sort_values("quarter")
         cost_ratio[acc] = [[q, v / rev_map[q]] for q, v in zip(sub.quarter, sub.value)
                            if rev_map.get(q) and (q, acc) not in bad_cost]   # 파싱 이상치 제외
+    rank = {}
+    for p in ccfg.get("rank_pages", []):
+        for metric, label in (("views_delta_w", "주간 조회수 증분"), ("promo_share", "프로모션 비중"),
+                              ("own_ip_share", "자사 IP 비중"), ("avg_free_eps", "평균 무료 회차")):
+            pts = series(df, "rank_stats", metric, p["id"])
+            if pts:
+                rank.setdefault(label, {})[p["id"]] = pts
     chat = {}
     for s in ccfg.get("chat_sites", []):
         sm = s.get("signal_metric", "m2")
@@ -195,7 +202,7 @@ def build_company(con, cid, ccfg, cfg, as_of):
                 nowcast=nc, status=status, auto_summary=auto_summary(nc, status),
                 commentary=commentary, naver=naver, own_groups=own_groups, gtrends=gtrends,
                 similarweb=sw, fx=fx, tranco=tranco, ip_mix=ip_mix, financials=fin_tbl,
-                segments=seg_tbl, events=events, region=region, cost_ratio=cost_ratio, chat=chat,
+                segments=seg_tbl, events=events, region=region, cost_ratio=cost_ratio, chat=chat, rank=rank,
                 domains=[d["domain"] for d in ccfg.get("domains", [])])
 
 

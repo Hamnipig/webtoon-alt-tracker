@@ -92,6 +92,11 @@ def candidates(df, ccfg, as_of):
         m = f"character_{s_.get('signal_metric', 'm2')}_delta_w"
         out.append((f"챗 활동량 {s_['id']}", s_["region"], quarterly(df, "chat_stats", s_["id"], metric=m, as_of=as_of),
                     nc.weekly(df, "chat_stats", s_["id"], metric=m), "W"))
+    for p in ccfg.get("rank_pages", []):
+        if p.get("parser") == "toptoon":   # 작품 조회수가 공개된 랭킹만 소비량 지표로 평가
+            out.append((f"랭킹 조회수 증분 {p['id']}", p.get("region", "domestic"),
+                        quarterly(df, "rank_stats", p["id"], metric="views_delta_w", as_of=as_of),
+                        nc.weekly(df, "rank_stats", p["id"], metric="views_delta_w"), "W"))
     for d in ccfg.get("domains", []):
         reg = "domestic" if d["region"] in ("domestic", "split") else "overseas"
         v = nc._region_visits(df, d, reg)

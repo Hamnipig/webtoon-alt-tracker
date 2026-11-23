@@ -27,6 +27,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
 
+import numpy as np
 import requests
 import yaml
 
@@ -889,9 +890,111 @@ def collect_market(ctx, company, stock_code):
 
 
 # -----------------------------------------------------------------------------
+# 10) 랭킹 페이지 기반 지표 (공개 페이지, 서버 렌더링)
+#   - 탑툰 TOP100: 작품별 누적 조회수 → 공통 작품 주간 증분 = 유료 회차 소비량 대리지표
+#   - 레진 랭킹 100: EVENT 표시·n화 무료 → 프로모션 강도, 제작사 표기 → 자사 IP 비중
+#   - 봄툰 실시간 BEST 20: 할인·n화무 표시 → 프로모션 강도
+# -----------------------------------------------------------------------------
+def _parse_rank(html, parser, own_kw):
+    from bs4 import BeautifulSoup
+    soup, items = BeautifulSoup(html, "lxml"), []
+    if parser == "toptoon":
+        for a in soup.select("a.serial__link"):
+            t = a.select_one(".serial__title-text"); v = a.select_one(".serial__views")
+            n = a.select_one(".serial__number")
+            if not t:
+                continue
+            _, nums, _ = parse_card(v.get_text(strip=True)) if v else ([], [], "")
+            items.append(dict(key=a.get("href", ""), title=t.get_text(strip=True),
+                              rank=int(n.get_text(strip=True)) if n and n.get_text(strip=True).isdigit() else len(items) + 1,
+                              views=nums[0] if nums else None, promo=0, free_eps=None, new=0, own=0))
+    elif parser == "lezhin":
+        for a in soup.select('a[href*="/comic/"]'):
+            ps = [p.get_text(strip=True) for p in a.find_all("p")]
+            if len(ps) < 3 or not ps[0].isdigit():
+                continue
+            txt = a.get_text(" ", strip=True)
+            badges = [b.get_text(strip=True) for b in a.select('[data-testid="basic-badge"]')]
+            m = re.search(r"(\d+)\s*화\s*무료", txt)
+            items.append(dict(key=a.get("href", ""), title=ps[1], rank=int(ps[0]), views=None,
+                              promo=int("EVENT" in badges or "EVENT" in txt.split()),
+                              free_eps=int(m.group(1)) if m else 0, new=int("NEW" in badges or "NEW" in txt.split()),
+                              own=int(any(k in ps[2] for k in own_kw))))
+    elif parser == "bomtoon":
+        for li in soup.select('li'):
+            b = li.find("button", attrs={"role": "link"})
+            if not b:
+                continue
+            ps = [p.get_text(strip=True) for p in b.find_all("p")]
+            if len(ps) < 2 or not ps[0].isdigit():
+                continue
+            txt = b.get_text(" ", strip=True)
+            items.append(dict(key=ps[1], title=ps[1], rank=int(ps[0]), views=None,
+                              promo=int(bool(re.search(r"할인|\d+화무|무료", txt))), free_eps=None, new=0,
+                              own=int(any(k in txt for k in own_kw))))
+            if len(items) >= 20:
+                break
+    return items
+
+
+def collect_rank_pages(ctx, company, ccfg):
+    pages = ccfg.get("rank_pages", [])
+    if not pages:
+        raise ConfigRequired("rank_pages 비어 있음")
+    ctx.con.execute("""CREATE TABLE IF NOT EXISTS rank_items (
+        company TEXT, page TEXT, item_key TEXT, snapshot_date TEXT, rank INTEGER, title TEXT,
+        views REAL, promo INTEGER, free_eps INTEGER, is_new INTEGER, own_ip INTEGER,
+        PRIMARY KEY (company, page, item_key, snapshot_date))""")
+    wk, snap, total, fails = week_start(ctx.today), ctx.today.isoformat(), 0, []
+    for p in pages:
+        try:
+            r = ctx.get(p["url"])
+            if r.status_code != 200:
+                fails.append(f"{p['id']}:HTTP{r.status_code}"); continue
+            items = _parse_rank(r.text, p["parser"], p.get("own_ip_keywords", []))
+            if len(items) < 5:
+                fails.append(f"{p['id']}:항목 {len(items)}개(구조 변경 의심)"); continue
+            for it in items:
+                ctx.con.execute("INSERT OR REPLACE INTO rank_items VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                (company, p["id"], it["key"], snap, it["rank"], it["title"], it["views"],
+                                 it["promo"], it["free_eps"], it["new"], it["own"]))
+            ctx.con.commit()
+            n = len(items)
+            base = dict(company=company, source="rank_stats", entity=p["id"], geo=p.get("region", ""),
+                        period_type="W", period=wk)
+            rows = [dict(base, metric="items", value=float(n), unit="count"),
+                    dict(base, metric="promo_share", value=sum(i["promo"] for i in items) / n, unit="share"),
+                    dict(base, metric="new_share", value=sum(i["new"] for i in items) / n, unit="share"),
+                    dict(base, metric="own_ip_share", value=sum(i["own"] for i in items) / n, unit="share")]
+            fe = [i["free_eps"] for i in items if i["free_eps"] is not None]
+            if fe:
+                rows.append(dict(base, metric="avg_free_eps", value=float(np.mean(fe)), unit="episodes"))
+            if any(i["views"] for i in items):
+                rows.append(dict(base, metric="views_total", value=float(sum(i["views"] or 0 for i in items)), unit="cum"))
+                prev_date = ctx.con.execute("SELECT MAX(snapshot_date) FROM rank_items WHERE company=? AND page=? "
+                                            "AND snapshot_date < ?", (company, p["id"], snap)).fetchone()[0]
+                if prev_date:
+                    prev = dict(ctx.con.execute("SELECT item_key, views FROM rank_items WHERE company=? AND page=? "
+                                                "AND snapshot_date=?", (company, p["id"], prev_date)).fetchall())
+                    common = [i for i in items if i["key"] in prev and i["views"] is not None and prev[i["key"]] is not None]
+                    days = (ctx.today - date.fromisoformat(prev_date)).days or 7
+                    delta = sum(i["views"] - prev[i["key"]] for i in common) * 7 / days
+                    rows += [dict(base, metric="views_delta_w", value=float(delta), unit="views/week"),
+                             dict(base, metric="views_common_items", value=float(len(common)), unit="count")]
+            total += db.upsert_metrics(ctx.con, rows)
+        except Exception as e:  # noqa: BLE001
+            fails.append(f"{p['id']}:{type(e).__name__}")
+    if fails:
+        db.log_run(ctx.con, company, "rank_pages_issues", "FAILED", 0, "; ".join(fails))
+    if total == 0:
+        raise RuntimeError("; ".join(fails) or "0건")
+    return total
+
+
+# -----------------------------------------------------------------------------
 # 실행
 # -----------------------------------------------------------------------------
-SOURCES = ["manual", "naver", "gtrends", "fx", "tranco", "dart", "dart_docs", "pages", "catalog", "chat", "market", "peers"]
+SOURCES = ["manual", "naver", "gtrends", "fx", "tranco", "dart", "dart_docs", "pages", "catalog", "chat", "rank", "market", "peers"]
 
 
 def main():
@@ -919,6 +1022,7 @@ def main():
         if "catalog" in only and (c.get("chat_catalog") or {}).get("item_selector"):
             run_source(ctx, cid, "chat_catalog", collect_catalog, c)
         if "chat" in only:      run_source(ctx, cid, "chat_stats", collect_chat_stats, c)
+        if "rank" in only:      run_source(ctx, cid, "rank_pages", collect_rank_pages, c)
         if "market" in only:    run_source(ctx, cid, "market", collect_market, c["stock_code"])
 
     if "peers" in only:
