@@ -159,7 +159,7 @@ def build_company(con, cid, ccfg, cfg, as_of):
     rank = {}
     for p in ccfg.get("rank_pages", []):
         for metric, label in (("views_delta_w", "주간 조회수 증분"), ("promo_share", "프로모션 비중"),
-                              ("own_ip_share", "자사 IP 비중"), ("avg_free_eps", "평균 무료 회차")):
+                              ("own_ip_share", "자사 IP 비중"), ("avg_free_eps", "무료 회차 중앙값")):
             pts = series(df, "rank_stats", metric, p["id"])
             if pts:
                 rank.setdefault(label, {})[p["id"]] = pts

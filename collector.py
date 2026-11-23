@@ -979,7 +979,7 @@ def collect_rank_pages(ctx, company, ccfg):
                     dict(base, metric="own_ip_share", value=sum(i["own"] for i in items) / n, unit="share")]
             fe = [i["free_eps"] for i in items if i["free_eps"] is not None]
             if fe:
-                rows.append(dict(base, metric="avg_free_eps", value=float(np.mean(fe)), unit="episodes"))
+                rows.append(dict(base, metric="avg_free_eps", value=float(np.median(fe)), unit="episodes(median)"))   # 장기 연재작 왜곡 방지
             if any(i["views"] for i in items):
                 rows.append(dict(base, metric="views_total", value=float(sum(i["views"] or 0 for i in items)), unit="cum"))
                 prev_date = ctx.con.execute("SELECT MAX(snapshot_date) FROM rank_items WHERE company=? AND page=? "
