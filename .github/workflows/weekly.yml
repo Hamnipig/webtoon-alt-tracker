@@ -4,6 +4,7 @@ name: weekly-collect
 on:
   schedule:
     - cron: "37 0 * * 1"      # 매주 월요일 09:37 KST (직전 주 데이터 확정 후)
+    - cron: "13 4 * * 1"      # 백업: 13:13 KST — GitHub가 예약 실행을 건너뛰는 경우 대비 (2026-11-23 실제로 누락)
   workflow_dispatch: {}       # Actions 탭에서 수동 실행
   push:
     paths: ["commentary/**", "data/manual/**", "config.yaml", "templates/**"]
