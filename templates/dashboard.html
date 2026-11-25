@@ -302,10 +302,11 @@ function render(co) {
               {fmt: v => v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : v});
   } else {
     const ent = Object.entries(co.similarweb);
-    document.getElementById('ch-sw').innerHTML = ent.length ? `<table><tr><th>도메인</th><th>월</th><th class="n">방문</th><th class="n">체류(초)</th><th class="n">한국 비중</th></tr>
-      ${ent.map(([d, v]) => v.points.map(p => `<tr><td>${esc(d)}</td><td>${p[0].slice(0,7)}</td><td class="n">${Number(p[1]).toLocaleString()}</td>
+    document.getElementById('ch-sw').innerHTML = ent.length ? `<table><tr><th>도메인</th><th>월</th><th class="n">방문</th><th class="n">전월 대비</th><th class="n">체류(초)</th><th class="n">한국 비중</th></tr>
+      ${ent.map(([d, v]) => v.points.map((p, i) => `<tr><td>${esc(d)}</td><td>${p[0].slice(0,7)}</td><td class="n">${Number(p[1]).toLocaleString()}</td>
+        <td class="n ${i === v.points.length - 1 ? sign(v.mom) : ''}">${i === v.points.length - 1 ? pct(v.mom) : ''}</td>
         <td class="n">${(v.duration.find(x => x[0] === p[0]) || [,'–'])[1]}</td><td class="n">${pl((v.kr_share.find(x => x[0] === p[0]) || [,null])[1])}</td></tr>`).join('')).join('')}</table>
-      <div class="note">3개월 이상 쌓이면 추이 차트로 바뀝니다.</div>` : '<div class="empty">아직 입력 없음 — 하단 입력 폼 사용</div>';
+      <div class="note">3개월 이상 쌓이면 추이 차트로 바뀝니다. 분기 신호는 '이번 분기 월평균 vs 직전 분기 월평균'으로 계산하며, 직전 분기 2개월 이상이 있어야 합니다.</div>` : '<div class="empty">아직 입력 없음 — 하단 입력 폼 사용</div>';
   }
   lineChart(document.getElementById('ch-fx'), co.fx, {fmt: v => Number(v).toFixed(0)});
   lineChart(document.getElementById('ch-tr'), co.tranco, {reverse: true, fmt: v => Number(v).toLocaleString()});

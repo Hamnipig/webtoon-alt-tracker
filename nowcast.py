@@ -89,7 +89,9 @@ def qtd_growth_weekly(s: pd.Series, q: str, as_of: date):
 
 
 def qtd_growth_monthly(s: pd.Series, q: str, as_of: date):
-    """월간 시계열(Similarweb). 이번 분기 '완결 월' 수만큼 직전 분기와 비교."""
+    """월간 시계열(Similarweb): 이번 분기 완결 월들의 '월평균' vs 직전 분기 월평균.
+    같은 위치의 달끼리 맞추지 않으므로(10월 vs 7월), 무료판처럼 최근 3개월만 확인 가능해도 계산된다.
+    직전 분기는 최소 2개월, 이번 분기는 최소 1개월이 있어야 한다."""
     if s.empty:
         return None, 0
     qs, qn = pd.Timestamp(q_start(q)), pd.Timestamp(q_start(q_shift(q, 1)))
@@ -99,10 +101,20 @@ def qtd_growth_monthly(s: pd.Series, q: str, as_of: date):
     if k == 0:
         return None, 0
     ps = pd.Timestamp(q_start(q_shift(q, -1)))
-    prev = s[(s.index >= ps) & (s.index < qs)].iloc[:k]
-    if len(prev) < k or prev.sum() <= 0:
+    prev = s[(s.index >= ps) & (s.index < qs)]
+    if len(prev) < 2 or prev.mean() <= 0:
         return None, k
-    return float(cur.sum() / prev.sum() - 1), k
+    return float(cur.mean() / prev.mean() - 1), k
+
+
+def mom(s: pd.Series):
+    """마지막 달 전월 대비 (연속된 두 달이 있을 때만)."""
+    if len(s) < 2:
+        return None
+    a, b = s.index[-1], s.index[-2]
+    if (a.year * 12 + a.month) - (b.year * 12 + b.month) != 1 or not s.iloc[-2]:
+        return None
+    return float(s.iloc[-1] / s.iloc[-2] - 1)
 
 
 def fx_qoq(df, pair, q, as_of):

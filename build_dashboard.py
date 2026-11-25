@@ -111,7 +111,8 @@ def build_company(con, cid, ccfg, cfg, as_of):
     for d in ccfg.get("domains", []):
         pts = series(df, "similarweb", "visits", d["domain"])
         if pts:
-            sw[d["domain"]] = dict(points=pts, region=d["region"],
+            vs = nowcast.weekly(df, "similarweb", d["domain"], metric="visits")
+            sw[d["domain"]] = dict(points=pts, region=d["region"], mom=nowcast.mom(vs),
                                    duration=series(df, "similarweb", "avg_duration_sec", d["domain"]),
                                    kr_share=series(df, "similarweb", "kr_share", d["domain"]))
 
